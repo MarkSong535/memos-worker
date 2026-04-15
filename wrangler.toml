@@ -14,7 +14,7 @@ database_name = "memos-db"
 
 [[kv_namespaces]]
 binding = "NOTES_KV"
-id = "memos-kv"
+id = "ddc0889570d44bf28b5d08d83d0ad638"
 preview_id = ""
 
 [[r2_buckets]]
