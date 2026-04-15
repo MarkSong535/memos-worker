@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Shares</title>
+	<link rel="icon" type="image/png" href="/favicon.png">
+</head>
+<style>
+  :root {
+	--bg-color: #f4f7f9;
+	--surface-color: rgba(255, 255, 255, 0.82);
+	--surface-strong: #ffffff;
+	--text-color: #1f2937;
+	--text-secondary: #6b7280;
+	--border-color: #dbe4f0;
+	--primary-color: #367cff;
+	--primary-hover: #255fd1;
+	--danger-color: #d93f5d;
+	--danger-hover: #b7304b;
+	--success-color: #1f9d68;
+	--shadow-color: rgba(15, 23, 42, 0.12);
+	--font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+
+  html[data-theme='dark'] {
+	--bg-color: #081120;
+	--surface-color: rgba(17, 24, 39, 0.78);
+	--surface-strong: rgba(17, 24, 39, 0.92);
+	--text-color: #f3f4f6;
+	--text-secondary: #9ca3af;
+	--border-color: rgba(148, 163, 184, 0.2);
+	--shadow-color: rgba(0, 0, 0, 0.35);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+	margin: 0;
+	font-family: var(--font-family);
+	background: radial-gradient(circle at top, rgba(54, 124, 255, 0.14), transparent 32%), var(--bg-color);
+	color: var(--text-color);
+	min-height: 100vh;
+	padding: 2rem 1.25rem 3rem;
+  }
+
+  html[data-theme='dark'] body {
+	background-image:
+		radial-gradient(circle at top, rgba(54, 124, 255, 0.18), transparent 28%),
+		url(/bg.jpg);
+	background-size: cover;
+	background-position: center;
+	background-attachment: fixed;
+  }
+
+  .page {
+	max-width: 1180px;
+	margin: 0 auto;
+  }
+
+  .topbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1rem;
+	margin-bottom: 1.5rem;
+  }
+
+  .title-group h1 {
+	margin: 0;
+	font-size: clamp(2rem, 4vw, 3rem);
+  }
+
+  .title-group p {
+	margin: 0.5rem 0 0;
+	color: var(--text-secondary);
+  }
+
+  .toolbar {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+	flex-wrap: wrap;
+  }
+
+  .glass-card {
+	background: var(--surface-color);
+	backdrop-filter: blur(14px);
+	-webkit-backdrop-filter: blur(14px);
+	border: 1px solid var(--border-color);
+	border-radius: 20px;
+	box-shadow: 0 18px 40px var(--shadow-color);
+  }
+
+  .stats {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+	gap: 1rem;
+	margin-bottom: 1.5rem;
+  }
+
+  .stat-card {
+	padding: 1.25rem 1.35rem;
+  }
+
+  .stat-label {
+	font-size: 0.82rem;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	color: var(--text-secondary);
+  }
+
+  .stat-value {
+	font-size: 2rem;
+	font-weight: 700;
+	margin-top: 0.35rem;
+  }
+
+  .section {
+	margin-top: 1.5rem;
+  }
+
+  .section-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1rem;
+	margin-bottom: 1rem;
+  }
+
+  .section-header h2 {
+	margin: 0;
+	font-size: 1.25rem;
+  }
+
+  .section-header span {
+	color: var(--text-secondary);
+	font-size: 0.95rem;
+  }
+
+  .cards {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+	gap: 1rem;
+  }
+
+  .share-card {
+	padding: 1.2rem;
+	display: flex;
+	flex-direction: column;
+	gap: 1rem;
+  }
+
+  .share-card-header {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 0.75rem;
+  }
+
+  .share-card-title {
+	margin: 0;
+	font-size: 1rem;
+	line-height: 1.4;
+  }
+
+  .share-card-meta {
+	margin-top: 0.35rem;
+	color: var(--text-secondary);
+	font-size: 0.9rem;
+  }
+
+  .share-card-snippet {
+	margin: 0;
+	color: var(--text-secondary);
+	line-height: 1.6;
+	min-height: 3.2em;
+  }
+
+  .link-box {
+	background: var(--surface-strong);
+	border: 1px solid var(--border-color);
+	border-radius: 14px;
+	padding: 0.85rem 0.95rem;
+	word-break: break-all;
+	font-size: 0.92rem;
+  }
+
+  .label {
+	display: block;
+	font-size: 0.78rem;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--text-secondary);
+	margin-bottom: 0.45rem;
+  }
+
+  .button-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.6rem;
+  }
+
+  button, .btn-link {
+	border: none;
+	border-radius: 999px;
+	padding: 0.7rem 1rem;
+	font: inherit;
+	cursor: pointer;
+	text-decoration: none;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	transition: transform 0.15s ease, opacity 0.15s ease, background-color 0.15s ease;
+  }
+
+  button:hover, .btn-link:hover {
+	transform: translateY(-1px);
+  }
+
+  button:disabled {
+	cursor: wait;
+	opacity: 0.75;
+	transform: none;
+  }
+
+  .btn-primary {
+	background: var(--primary-color);
+	color: white;
+  }
+
+  .btn-primary:hover, .btn-link.btn-primary:hover {
+	background: var(--primary-hover);
+  }
+
+  .btn-secondary {
+	background: transparent;
+	color: var(--text-color);
+	border: 1px solid var(--border-color);
+  }
+
+  .btn-danger {
+	background: rgba(217, 63, 93, 0.12);
+	color: var(--danger-color);
+	border: 1px solid rgba(217, 63, 93, 0.2);
+  }
+
+  .btn-danger:hover {
+	background: rgba(217, 63, 93, 0.18);
+	color: var(--danger-hover);
+  }
+
+  .icon-button {
+	width: 44px;
+	height: 44px;
+	padding: 0;
+	border-radius: 50%;
+	background: transparent;
+	border: 1px solid var(--border-color);
+	color: var(--text-color);
+  }
+
+  .empty-state, .loading-state, .error-state {
+	padding: 2rem;
+	text-align: center;
+	color: var(--text-secondary);
+  }
+
+  .error-state {
+	color: var(--danger-color);
+  }
+
+  .spinner {
+	width: 42px;
+	height: 42px;
+	border: 4px solid var(--border-color);
+	border-top-color: var(--primary-color);
+	border-radius: 50%;
+	animation: spin 1s linear infinite;
+	margin: 0 auto 1rem;
+  }
+
+  .pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4rem;
+	padding: 0.35rem 0.7rem;
+	border-radius: 999px;
+	background: rgba(54, 124, 255, 0.12);
+	color: var(--primary-color);
+	font-size: 0.82rem;
+	font-weight: 600;
+  }
+
+  @keyframes spin {
+	to { transform: rotate(360deg); }
+  }
+
+  @media (max-width: 720px) {
+	body {
+		padding: 1rem 0.85rem 2rem;
+	}
+
+	.topbar,
+	.section-header {
+		flex-direction: column;
+		align-items: stretch;
+	}
+  }
+</style>
+<body>
+<div class="page">
+	<header class="topbar">
+		<div class="title-group">
+			<h1>Shares</h1>
+			<p>Review active note and file links in one place.</p>
+		</div>
+		<div class="toolbar">
+			<a class="btn-link btn-secondary" href="/">Back to Memos</a>
+			<button id="refresh-btn" class="btn-secondary" type="button">Refresh</button>
+			<button id="theme-toggle-btn" class="icon-button" type="button" title="Toggle Theme"></button>
+		</div>
+	</header>
+
+	<section class="stats">
+		<div class="glass-card stat-card">
+			<div class="stat-label">Note Shares</div>
+			<div class="stat-value" id="note-share-count">0</div>
+		</div>
+		<div class="glass-card stat-card">
+			<div class="stat-label">File Shares</div>
+			<div class="stat-value" id="file-share-count">0</div>
+		</div>
+	</section>
+
+	<section class="section">
+		<div class="section-header">
+			<h2>Shared Notes</h2>
+			<span id="notes-summary">Loading…</span>
+		</div>
+		<div id="note-shares-container" class="glass-card loading-state">
+			<div class="spinner"></div>
+			<div>Loading note shares…</div>
+		</div>
+	</section>
+
+	<section class="section">
+		<div class="section-header">
+			<h2>Shared Files</h2>
+			<span id="files-summary">Loading…</span>
+		</div>
+		<div id="file-shares-container" class="glass-card loading-state">
+			<div class="spinner"></div>
+			<div>Loading file shares…</div>
+		</div>
+	</section>
+</div>
+
+	<script>
+		const themeToggleBtn = document.getElementById('theme-toggle-btn');
+		const refreshBtn = document.getElementById('refresh-btn');
+		const noteShareCount = document.getElementById('note-share-count');
+		const fileShareCount = document.getElementById('file-share-count');
+		const notesSummary = document.getElementById('notes-summary');
+	const filesSummary = document.getElementById('files-summary');
+
+	function applyTheme(theme) {
+		document.documentElement.dataset.theme = theme;
+		localStorage.setItem('theme', theme);
+		themeToggleBtn.innerHTML = theme === 'dark'
+			? `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M12 17a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-15a1 1 0 0 1 1 1v2a1 1 0 1 1-2 0V3a1 1 0 0 1 1-1zm0 16a1 1 0 0 1 1 1v2a1 1 0 1 1-2 0v-2a1 1 0 0 1 1-1zM4.22 5.64a1 1 0 0 1 1.42 0l1.42 1.41a1 1 0 0 1-1.42 1.42L4.22 7.05a1 1 0 0 1 0-1.41zm12.72 12.72a1 1 0 0 1 1.41 0l1.42 1.42a1 1 0 1 1-1.42 1.41l-1.41-1.41a1 1 0 0 1 0-1.42zM2 12a1 1 0 0 1 1-1h2a1 1 0 1 1 0 2H3a1 1 0 0 1-1-1zm16 0a1 1 0 0 1 1-1h2a1 1 0 1 1 0 2h-2a1 1 0 0 1-1-1zM5.64 19.78a1 1 0 0 1 0-1.42l1.41-1.41a1 1 0 1 1 1.42 1.41l-1.42 1.42a1 1 0 0 1-1.41 0zM18.36 5.64a1 1 0 0 1 0 1.41l-1.41 1.42a1 1 0 0 1-1.42-1.42l1.41-1.41a1 1 0 0 1 1.42 0z"></path></svg>`
+			: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M14.77 4.82A9 9 0 1 0 19.18 9.2 7 7 0 0 1 14.77 4.82z"></path></svg>`;
+	}
+
+	function formatTimestamp(timestamp) {
+		if (!timestamp) return 'Unknown update time';
+		return new Date(timestamp).toLocaleString(undefined, {
+			year: 'numeric',
+			month: 'short',
+			day: 'numeric',
+			hour: 'numeric',
+			minute: '2-digit'
+		});
+	}
+
+	function formatBytes(bytes) {
+		if (!bytes) return '0 B';
+		const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+		let value = Number(bytes);
+		let unitIndex = 0;
+		while (value >= 1024 && unitIndex < units.length - 1) {
+			value /= 1024;
+			unitIndex++;
+		}
+		return `${value.toFixed(value >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+	}
+
+	function escapeHtml(value) {
+		return String(value ?? '')
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/"/g, '&quot;')
+			.replace(/'/g, '&#39;');
+	}
+
+	async function copyText(value, button) {
+		const originalText = button.textContent;
+		await navigator.clipboard.writeText(value);
+		button.textContent = 'Copied';
+		setTimeout(() => {
+			button.textContent = originalText;
+		}, 1200);
+	}
+
+	function createEmptyState(id, message) {
+		const div = document.createElement('div');
+		div.id = id;
+		div.className = 'glass-card empty-state';
+		div.textContent = message;
+		return div;
+	}
+
+	function renderNoteShares(items) {
+		const currentContainer = document.getElementById('note-shares-container');
+		noteShareCount.textContent = String(items.length);
+		notesSummary.textContent = items.length === 0 ? 'No active note shares' : `${items.length} active note link${items.length === 1 ? '' : 's'}`;
+
+		if (items.length === 0) {
+			currentContainer.replaceWith(createEmptyState('note-shares-container', 'No note shares are active right now.'));
+			return;
+		}
+
+		const wrapper = document.createElement('div');
+		wrapper.id = 'note-shares-container';
+		wrapper.className = 'cards';
+
+		items.forEach(item => {
+			const card = document.createElement('article');
+			card.className = 'glass-card share-card';
+			card.innerHTML = `
+				<div class="share-card-header">
+					<div>
+						<h3 class="share-card-title">Note #${item.noteId}</h3>
+						<div class="share-card-meta">Updated ${formatTimestamp(item.updatedAt)}</div>
+					</div>
+					<div class="pill">Public note</div>
+				</div>
+				<p class="share-card-snippet">${escapeHtml(item.snippet || 'Shared note')}</p>
+				<div class="link-box">
+					<span class="label">Display Link</span>
+					<div>${escapeHtml(item.displayUrl)}</div>
+				</div>
+				<div class="link-box">
+					<span class="label">Raw Link</span>
+					<div>${escapeHtml(item.rawUrl)}</div>
+				</div>
+				<div class="button-row">
+					<a class="btn-link btn-primary" href="${escapeHtml(item.displayUrl)}" target="_blank" rel="noopener noreferrer">Open</a>
+					<button class="btn-secondary" type="button" data-copy="${escapeHtml(item.displayUrl)}">Copy Link</button>
+					<button class="btn-secondary" type="button" data-copy="${escapeHtml(item.rawUrl)}">Copy Raw</button>
+					<button class="btn-danger" type="button" data-revoke-note="${item.noteId}">Revoke</button>
+				</div>
+			`;
+			wrapper.appendChild(card);
+		});
+
+		currentContainer.replaceWith(wrapper);
+	}
+
+	function renderFileShares(items) {
+		const currentContainer = document.getElementById('file-shares-container');
+		fileShareCount.textContent = String(items.length);
+		filesSummary.textContent = items.length === 0 ? 'No active file shares' : `${items.length} active file link${items.length === 1 ? '' : 's'}`;
+
+		if (items.length === 0) {
+			currentContainer.replaceWith(createEmptyState('file-shares-container', 'No file shares are active right now.'));
+			return;
+		}
+
+		const wrapper = document.createElement('div');
+		wrapper.id = 'file-shares-container';
+		wrapper.className = 'cards';
+
+		items.forEach(item => {
+			const card = document.createElement('article');
+			card.className = 'glass-card share-card';
+			card.innerHTML = `
+				<div class="share-card-header">
+					<div>
+						<h3 class="share-card-title">${escapeHtml(item.name)}</h3>
+						<div class="share-card-meta">Note #${item.noteId} · ${formatBytes(item.size)} · Updated ${formatTimestamp(item.updatedAt)}</div>
+					</div>
+					<div class="pill">Public file</div>
+				</div>
+				<div class="link-box">
+					<span class="label">File Link</span>
+					<div>${escapeHtml(item.url)}</div>
+				</div>
+				<div class="button-row">
+					<a class="btn-link btn-primary" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">Open</a>
+					<button class="btn-secondary" type="button" data-copy="${escapeHtml(item.url)}">Copy Link</button>
+					<button class="btn-danger" type="button" data-revoke-file="${item.noteId}:${item.fileId}">Revoke</button>
+				</div>
+			`;
+			wrapper.appendChild(card);
+		});
+
+		currentContainer.replaceWith(wrapper);
+	}
+
+	function renderError(message) {
+		noteShareCount.textContent = '–';
+		fileShareCount.textContent = '–';
+		notesSummary.textContent = 'Unable to load';
+		filesSummary.textContent = 'Unable to load';
+
+		const noteError = document.createElement('div');
+		noteError.id = 'note-shares-container';
+		noteError.className = 'glass-card error-state';
+		noteError.textContent = message;
+
+		const fileError = document.createElement('div');
+		fileError.id = 'file-shares-container';
+		fileError.className = 'glass-card error-state';
+		fileError.textContent = message;
+
+		document.getElementById('note-shares-container').replaceWith(noteError);
+		document.getElementById('file-shares-container').replaceWith(fileError);
+	}
+
+	async function revokeNoteShare(noteId, button) {
+		button.disabled = true;
+		button.textContent = 'Revoking…';
+		const response = await fetch(`/api/notes/${noteId}/share`, { method: 'DELETE' });
+		if (!response.ok) {
+			const error = await response.json().catch(() => ({ error: 'Failed to revoke note share.' }));
+			throw new Error(error.error || 'Failed to revoke note share.');
+		}
+		await loadShares();
+	}
+
+	async function revokeFileShare(noteId, fileId, button) {
+		button.disabled = true;
+		button.textContent = 'Revoking…';
+		const response = await fetch(`/api/notes/${noteId}/files/${fileId}/share`, { method: 'DELETE' });
+		if (!response.ok) {
+			const error = await response.json().catch(() => ({ error: 'Failed to revoke file share.' }));
+			throw new Error(error.error || 'Failed to revoke file share.');
+		}
+		await loadShares();
+	}
+
+	async function loadShares() {
+		try {
+			const response = await fetch('/api/shares');
+			if (response.status === 401) {
+				window.location.href = '/';
+				return;
+			}
+			if (!response.ok) {
+				const error = await response.json().catch(() => ({ error: 'Failed to load shares.' }));
+				throw new Error(error.error || 'Failed to load shares.');
+			}
+			const data = await response.json();
+			renderNoteShares(data.noteShares || []);
+			renderFileShares(data.fileShares || []);
+		} catch (error) {
+			console.error(error);
+			renderError(error.message);
+		}
+	}
+
+	document.addEventListener('click', async (event) => {
+		const copyButton = event.target.closest('[data-copy]');
+		if (copyButton) {
+			try {
+				await copyText(copyButton.dataset.copy, copyButton);
+			} catch (error) {
+				console.error(error);
+			}
+			return;
+		}
+
+		const noteRevokeButton = event.target.closest('[data-revoke-note]');
+		if (noteRevokeButton) {
+			try {
+				await revokeNoteShare(noteRevokeButton.dataset.revokeNote, noteRevokeButton);
+			} catch (error) {
+				console.error(error);
+				noteRevokeButton.disabled = false;
+				noteRevokeButton.textContent = 'Revoke';
+				alert(error.message);
+			}
+			return;
+		}
+
+		const fileRevokeButton = event.target.closest('[data-revoke-file]');
+		if (fileRevokeButton) {
+			const [noteId, fileId] = fileRevokeButton.dataset.revokeFile.split(':');
+			try {
+				await revokeFileShare(noteId, fileId, fileRevokeButton);
+			} catch (error) {
+				console.error(error);
+				fileRevokeButton.disabled = false;
+				fileRevokeButton.textContent = 'Revoke';
+				alert(error.message);
+			}
+		}
+	});
+
+	themeToggleBtn.addEventListener('click', () => {
+		const nextTheme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+		applyTheme(nextTheme);
+	});
+	refreshBtn.addEventListener('click', loadShares);
+
+	applyTheme(localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+	loadShares();
+</script>
+</body>
+</html>

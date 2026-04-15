@@ -24,6 +24,9 @@ async function handleApiRequest(request, env) {
 		// 返回一个 302 临时重定向响应
 		return Response.redirect(targetUrl.toString(), 302);
 	}
+	if (pathname === '/shares') {
+		return Response.redirect(new URL('/shares.html', request.url).toString(), 302);
+	}
 	// 匹配获取分享内容的公开 API /api/public/note/some-uuid
 	const publicNoteMatch = pathname.match(/^\/api\/public\/note\/([a-zA-Z0-9-]+)$/);
 	if (publicNoteMatch && request.method === 'GET') {
@@ -85,9 +88,14 @@ async function handleApiRequest(request, env) {
 	}
 
 	const shareFileMatch = pathname.match(/^\/api\/notes\/(\d+)\/files\/([a-zA-Z0-9-]+)\/share$/);
-	if (shareFileMatch && request.method === 'POST') {
+	if (shareFileMatch) {
 		const [, noteId, fileId] = shareFileMatch;
-		return handleShareFileRequest(noteId, fileId, request, env);
+		if (request.method === 'POST') {
+			return handleShareFileRequest(noteId, fileId, request, env);
+		}
+		if (request.method === 'DELETE') {
+			return handleUnshareFileRequest(noteId, fileId, env);
+		}
 	}
 
 	// --- START: 更新后的 Docs API 路由 ---
@@ -144,6 +152,9 @@ async function handleApiRequest(request, env) {
 	}
 	if (request.method === 'GET' && pathname === '/api/attachments') {
 		return handleGetAllAttachments(request, env);
+	}
+	if (request.method === 'GET' && pathname === '/api/shares') {
+		return handleListSharesRequest(request, env);
 	}
 	if (request.method === 'POST' && pathname === '/api/proxy/upload/imgur') {
 		return handleImgurProxyUpload(request, env);
@@ -1634,6 +1645,122 @@ async function handleDocsNodeRename(request, nodeId, env) {
 }
 
 /**
+ * 列出带有指定前缀的全部 KV 键。
+ */
+async function listAllKvKeys(namespace, prefix) {
+	let cursor = undefined;
+	const keys = [];
+
+	do {
+		const response = await namespace.list({ prefix, cursor });
+		keys.push(...response.keys);
+		cursor = response.list_complete ? undefined : response.cursor;
+	} while (cursor);
+
+	return keys;
+}
+
+/**
+ * 将笔记内容转为简短摘要，方便在分享页展示。
+ */
+function createShareSnippet(content = '') {
+	return content
+		.replace(/!\[[^\]]*]\([^)]+\)/g, ' ')
+		.replace(/<[^>]+>/g, ' ')
+		.replace(/[`#>*_~-]/g, ' ')
+		.replace(/\[(.*?)\]\([^)]+\)/g, '$1')
+		.replace(/\s+/g, ' ')
+		.trim()
+		.slice(0, 180);
+}
+
+/**
+ * 获取当前所有有效的分享链接。
+ * GET /api/shares
+ */
+async function handleListSharesRequest(request, env) {
+	const db = env.DB;
+	const { protocol, host } = new URL(request.url);
+	const origin = `${protocol}//${host}`;
+
+	try {
+		const noteShareKeys = await listAllKvKeys(env.NOTES_KV, 'note_share:');
+		const noteShareLinks = (await Promise.all(noteShareKeys.map(async key => {
+			const noteId = parseInt(key.name.replace('note_share:', ''), 10);
+			if (isNaN(noteId)) {
+				return null;
+			}
+			const publicId = await env.NOTES_KV.get(key.name);
+			if (!publicId) {
+				return null;
+			}
+			return { noteId, publicId };
+		}))).filter(Boolean);
+
+		const noteIds = [...new Set(noteShareLinks.map(item => item.noteId))];
+		let notesById = new Map();
+		if (noteIds.length > 0) {
+			const placeholders = noteIds.map(() => '?').join(', ');
+			const stmt = db.prepare(`SELECT id, content, updated_at FROM notes WHERE id IN (${placeholders})`);
+			const { results } = await stmt.bind(...noteIds).all();
+			notesById = new Map((results || []).map(note => [note.id, note]));
+		}
+
+		const noteShares = noteShareLinks
+			.map(item => {
+				const note = notesById.get(item.noteId);
+				return {
+					noteId: item.noteId,
+					publicId: item.publicId,
+					updatedAt: note?.updated_at || null,
+					snippet: createShareSnippet(note?.content || '') || 'Shared note',
+					displayUrl: `${origin}/share/${item.publicId}`,
+					rawUrl: `${origin}/api/public/note/raw/${item.publicId}`
+				};
+			})
+			.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+
+		const sharedFilesQuery = `
+			SELECT
+				n.id AS noteId,
+				n.updated_at AS updatedAt,
+				json_extract(json_each.value, '$.id') AS fileId,
+				json_extract(json_each.value, '$.name') AS name,
+				json_extract(json_each.value, '$.size') AS size,
+				json_extract(json_each.value, '$.type') AS type,
+				json_extract(json_each.value, '$.public_id') AS publicId
+			FROM notes n, json_each(n.files) AS json_each
+			WHERE json_valid(n.files)
+				AND json_array_length(n.files) > 0
+				AND json_extract(json_each.value, '$.public_id') IS NOT NULL
+				AND json_extract(json_each.value, '$.public_id') != ''
+			ORDER BY n.updated_at DESC
+		`;
+		const { results: sharedFileResults } = await db.prepare(sharedFilesQuery).all();
+		const fileShares = (sharedFileResults || []).map(file => ({
+			noteId: file.noteId,
+			fileId: file.fileId,
+			name: file.name || 'Untitled file',
+			size: file.size || 0,
+			type: file.type || 'application/octet-stream',
+			publicId: file.publicId,
+			updatedAt: file.updatedAt,
+			url: `${origin}/api/public/file/${file.publicId}`
+		}));
+
+		return jsonResponse({
+			noteShares,
+			fileShares,
+			totalNoteShares: noteShares.length,
+			totalFileShares: fileShares.length
+		});
+	} catch (e) {
+		console.error('List Shares Error:', e.message);
+		return jsonResponse({ error: 'Database or KV error while listing shares', message: e.message }, 500);
+	}
+}
+
+/**
  * 为文件生成一个唯一的、可公开访问的链接。
  * POST /api/notes/:noteId/files/:fileId/share
  */
@@ -1687,6 +1814,51 @@ async function handleShareFileRequest(noteId, fileId, request, env) {
 	} catch (e) {
 		console.error(`Share File Error (noteId: ${noteId}, fileId: ${fileId}):`, e.message);
 		return jsonResponse({ error: 'Database error while generating link', message: e.message }, 500);
+	}
+}
+
+/**
+ * 取消文件分享。
+ * DELETE /api/notes/:noteId/files/:fileId/share
+ */
+async function handleUnshareFileRequest(noteId, fileId, env) {
+	const db = env.DB;
+	const id = parseInt(noteId, 10);
+	if (isNaN(id)) {
+		return new Response('Invalid Note ID', { status: 400 });
+	}
+
+	try {
+		const note = await db.prepare("SELECT files FROM notes WHERE id = ?").bind(id).first();
+		if (!note) {
+			return jsonResponse({ error: 'Note not found' }, 404);
+		}
+
+		let files = [];
+		try {
+			if (typeof note.files === 'string') {
+				files = JSON.parse(note.files);
+			}
+		} catch (e) { /* ignore */ }
+
+		const fileIndex = files.findIndex(f => f.id === fileId);
+		if (fileIndex === -1) {
+			return jsonResponse({ error: 'File not found in this note' }, 404);
+		}
+
+		const publicId = files[fileIndex].public_id;
+		if (publicId) {
+			delete files[fileIndex].public_id;
+			await Promise.all([
+				env.NOTES_KV.delete(`public_file:${publicId}`),
+				db.prepare("UPDATE notes SET files = ? WHERE id = ?").bind(JSON.stringify(files), id).run()
+			]);
+		}
+
+		return jsonResponse({ success: true, message: 'File sharing has been revoked.' });
+	} catch (e) {
+		console.error(`Unshare File Error (noteId: ${noteId}, fileId: ${fileId}):`, e.message);
+		return jsonResponse({ error: 'Database error while revoking file link', message: e.message }, 500);
 	}
 }
 
