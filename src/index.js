@@ -27,6 +27,10 @@ export default {
  */
 async function handleApiRequest(request, env) {
 	const { pathname } = new URL(request.url);
+    if (pathname === '/' || pathname === '/index.html') {
+        if (!await authenticate(request, env)) return authRoute(new Request(new URL('/api/auth/login', request.url)), env);
+        return env.ASSETS.fetch(request);
+    }
     if (pathname.startsWith('/api/public/')) return publicShare(request, env);
     if (pathname.startsWith('/api/auth/')) return authRoute(request, env);
     if (!['GET', 'HEAD'].includes(request.method) && request.headers.get('Origin') !== new URL(request.url).origin) {

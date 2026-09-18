@@ -3071,7 +3071,7 @@
 		<div id='login-error'></div>
 		<input type='hidden' id='username'>
 		<input type='hidden' id='password'>
-		<a href='/api/auth/login' id='login-btn'>Sign in with Authentik</a>
+		<p id='login-btn'>Redirecting to Authentik…</p>
 	</form>
 </div>
 <!-- 一个包裹三栏的容器 -->
@@ -5196,6 +5196,8 @@
 
 		try {
 			const me = await fetch('/api/me');
+            if (me.status === 401) { showLoginScreen(); return; }
+            if (!me.ok) throw new Error(`Session check failed (${me.status})`);
             currentUser = me.ok ? await me.json() : null;
             document.getElementById('permissions-link').hidden = !currentUser?.isAdmin;
             const response = await fetch('/api/notes?page=1');
@@ -5231,10 +5233,10 @@
 		} finally {
 			document.body.classList.remove('loading');
 			const initialLoader = document.getElementById('initial-loader');
-			initialLoader.style.opacity = '0';
-			setTimeout(() => {
-				initialLoader.style.display = 'none';
-			}, 200);
+			if (initialLoader) {
+                initialLoader.style.opacity = '0';
+                setTimeout(() => { initialLoader.style.display = 'none'; }, 200);
+            }
 		}
 	}
 
@@ -6898,9 +6900,7 @@
 
 	let load = false;
 	const showLoginScreen = () => {
-		authContainer.style.display = 'block';
-		appContainer.style.display = 'none';
-		document.body.classList.add('auth-visible');
+		window.location.replace('/api/auth/login');
 	};
 	const showAppScreen = () => {
 		if (load) return;

@@ -215,3 +215,22 @@ test('admin controls sharing immediately; disabled users cannot publish or self-
  assert.equal((await f.request('/api/notes/1/share','alice','POST',{})).status,200);
  assert.equal((await f.request('/api/notes/2/share','alice','POST',{})).status,403);
 });
+test('landing page starts SSO directly and authenticated visitors get the app',async()=>{
+ const f=fixture();const originalFetch=globalThis.fetch;
+ Object.assign(f.env,{OIDC_DISCOVERY_URL:'https://idp.test/discovery',OIDC_CLIENT_ID:'client',OIDC_CLIENT_SECRET:'test-only',ASSETS:{fetch:async()=>new Response('app')}});
+ globalThis.fetch=async()=>Response.json({issuer:'https://idp.test',authorization_endpoint:'https://idp.test/authorize',token_endpoint:'https://idp.test/token',jwks_uri:'https://idp.test/jwks'});
+ try {
+  for(const path of ['/','/index.html']) {
+   const response=await f.request(path,'anonymous');assert.equal(response.status,302);assert.equal(new URL(response.headers.get('Location')).origin,'https://idp.test');assert.ok(response.headers.get('Set-Cookie').includes('__Host-notes_oidc='));
+   assert.equal(await (await f.request(path,'alice')).text(),'app');
+  }
+ } finally {globalThis.fetch=originalFetch;}
+});
+test('missing login schema returns an actionable database error, not a group error',async()=>{
+ const f=fixture();const originalFetch=globalThis.fetch;
+ Object.assign(f.env,{OIDC_DISCOVERY_URL:'https://idp.test/discovery',OIDC_CLIENT_ID:'client',OIDC_CLIENT_SECRET:'test-only'});
+ f.sql.exec('DROP TABLE oidc_states');
+ globalThis.fetch=async()=>Response.json({issuer:'https://idp.test',authorization_endpoint:'https://idp.test/authorize',token_endpoint:'https://idp.test/token',jwks_uri:'https://idp.test/jwks'});
+ try {const response=await f.request('/api/auth/login','anonymous');assert.equal(response.status,503);assert.equal((await response.json()).code,'SSO_DATABASE_MIGRATION_REQUIRED');}
+ finally {globalThis.fetch=originalFetch;}
+});
