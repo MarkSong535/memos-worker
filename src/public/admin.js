@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-let users = [], active, page = 1, archived = false;
+let users = [], active;
 async function api(path, options = {}) {
   const res = await fetch(path, options);
   if (!res.ok) throw new Error(res.status === 401 ? 'Session expired. Return to Notes and sign in again.' : (await res.text()));
@@ -28,7 +28,7 @@ function renderUserSharing() {
 }
 async function openNote(id) {
   const note = await api(`/api/admin/notes/${id}/permissions`);
-  active = id; $('note-id').value = id; $('title').textContent = `Note #${id}`;
+  active = id; $('title').textContent = `Note #${id}`;
   $('owner').replaceChildren(option('', 'Unassigned — administrators only unless granted below'));
   users.forEach(u => $('owner').append(option(u.id, u.name + (u.email ? ` (${u.email})` : ''))));
   $('owner').value = note.owner_id || '';
@@ -50,20 +50,6 @@ async function openNote(id) {
   }
   $('editor').hidden = false; $('status').textContent = '';
 }
-async function listNotes() {
-  const data = await api(`/api/notes?page=${page}&archived=${archived}`);
-  for (const note of data.notes) {
-    const article = document.createElement('article'), button = document.createElement('button'), text = document.createElement('p');
-    button.textContent = `#${note.id}${archived ? ' (archived)' : ''} — Manage access`;
-    button.onclick = () => openNote(note.id).catch(report);
-    text.textContent = note.content.slice(0, 240); article.append(button, text); $('notes').append(article);
-  }
-  if (data.hasMore) page++;
-  else if (!archived) { archived = true; page = 1; await listNotes(); }
-  else $('more').hidden = true;
-}
-$('choose').onsubmit = e => { e.preventDefault(); openNote(Number($('note-id').value)).catch(report); };
-$('more').onclick = () => listNotes().catch(report);
 $('save').onclick = async () => {
   const grants = [], restore = [];
   for (const row of $('grants').children) {
@@ -76,14 +62,22 @@ $('save').onclick = async () => {
     await openNote(active); $('status').textContent = 'Permissions saved.';
   } catch (error) { report(error); }
 };
+$('flag').onclick = async () => {
+  try {
+    await api(`/api/notes/${active}?mode=flag`, { method: 'DELETE' });
+    await openNote(active);
+    $('status').textContent = 'Note flagged as deleted. Administrators retain access; public links are revoked.';
+  } catch (error) { report(error); }
+};
 $('purge').onclick = async () => {
   if (!confirm(`Permanently delete note #${active}? This cannot be undone.`)) return;
-  try { await api(`/api/notes/${active}`, { method: 'DELETE' }); location.href = '/admin.html'; } catch (error) { report(error); }
+  try { await api(`/api/notes/${active}`, { method: 'DELETE' }); location.href = '/'; } catch (error) { report(error); }
 };
 try {
   const me = await api('/api/me');
   if (!me.isAdmin) throw new Error('Administrator access required.');
-  users = await api('/api/admin/users'); renderUserSharing(); await listNotes();
+  users = await api('/api/admin/users'); renderUserSharing();
   const id = new URLSearchParams(location.search).get('note');
   if (id && /^\d+$/.test(id)) await openNote(Number(id));
+  else $('status').textContent = 'Open a note’s lock icon to manage its access.';
 } catch (error) { report(error); }

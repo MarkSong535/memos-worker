@@ -3078,7 +3078,7 @@
 <div id='app-layout-container'>
 
 	<!-- 左侧栏 -->
-	<aside id='left-sidebar'><a id='permissions-link' href='/admin.html' hidden>Manage note access</a>
+	<aside id='left-sidebar'>
 		<!-- --- 全局搜索框 --- -->
 		<div class='sidebar-search-container'>
 			<svg class='search-icon' xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='currentColor'>
@@ -4523,6 +4523,36 @@
 		notePopoverMenu.classList.add('visible');
 	}
 
+    function chooseAdminDeletion() {
+        return new Promise(resolve => {
+            const dialog = document.createElement('dialog');
+            dialog.style.cssText = 'border:1px solid var(--border-color);border-radius:12px;padding:24px;background:var(--bg-color,#fff);color:var(--text-color,#111);max-width:420px';
+            dialog.innerHTML = '<h3>Delete note</h3><p>Flag the note while retaining its contents, or permanently delete it.</p><div style="display:flex;gap:12px;flex-wrap:wrap"><button type="button" data-mode="flag">Flag as deleted</button><button type="button" data-mode="permanent">Permanently delete</button><button type="button" data-mode="cancel">Cancel</button></div>';
+            dialog.addEventListener('click', event => {
+                const mode = event.target.closest('[data-mode]')?.dataset.mode;
+                if (mode) dialog.close(mode);
+            });
+            dialog.addEventListener('close', () => { const mode = dialog.returnValue; dialog.remove(); resolve(mode); }, { once: true });
+            document.body.append(dialog);
+            dialog.showModal();
+        });
+    }
+    async function deleteNoteFromEntry(noteId) {
+        let mode = 'flag';
+        if (currentUser?.isAdmin) {
+            mode = await chooseAdminDeletion();
+            if (!['flag', 'permanent'].includes(mode)) return;
+        }
+        const message = mode === 'permanent' ? 'Permanently delete this note? This cannot be undone.' : currentUser?.isAdmin ? 'Flag this note as deleted? Its contents will be retained and public links revoked.' : 'Hide this note from your account? Administrators will retain access.';
+        if (!await showCustomConfirm(message)) return;
+        try {
+            const response = await fetch(`/api/notes/${noteId}?mode=${mode}`, { method: 'DELETE' });
+            if (!response.ok) throw new Error('Could not delete note. Please check your session and try again.');
+            await fetchNotes(1);
+            loadAndRenderTags(); loadAndRenderTimeline(); loadAndRenderStats();
+        } catch (error) { showCustomAlert(error.message, 'error'); }
+    }
+
 	// --- 隐藏笔记操作菜单 ---
 	function hideNotePopover() {
 		popoverHoverTimer = setTimeout(() => {
@@ -4663,20 +4693,7 @@
 				break;
 			}
 			case 'delete': {
-				if (!noteElement) return;
-				const confirmed = await showCustomConfirm(currentUser?.isAdmin ? 'Permanently delete this note? This cannot be undone.' : 'Hide this note from your account? Administrators will retain access.');
-				if (!confirmed) return;
-				waterfallObserver.unobserve(noteElement);
-				try {
-					const deleted = await fetch(`/api/notes/${noteId}`, { method: 'DELETE' });
-                    if (!deleted.ok) throw new Error('Could not delete note. Please sign in again if your session expired.');
-					noteElement.remove();
-					loadAndRenderTags();
-					loadAndRenderTimeline();
-					loadAndRenderStats();
-				} catch (error) {
-					showCustomAlert(error.message, 'error');
-				}
+                await deleteNoteFromEntry(noteId);
 				break;
 			}
 		}
@@ -5199,7 +5216,6 @@
             if (me.status === 401) { showLoginScreen(); return; }
             if (!me.ok) throw new Error(`Session check failed (${me.status})`);
             currentUser = me.ok ? await me.json() : null;
-            document.getElementById('permissions-link').hidden = !currentUser?.isAdmin;
             const response = await fetch('/api/notes?page=1');
 			if (response.ok) {
 				const data = await response.json();
@@ -7483,11 +7499,24 @@
 
         if (!note.can_share) noteElement.querySelectorAll('.share-file-btn').forEach(button => button.remove());
         if (!note.can_edit) noteElement.querySelectorAll('.edit, .unpin-btn, .delete-file-btn').forEach(button => button.remove());
+        const deleteButton = document.createElement('button');
+        deleteButton.type = 'button';
+        deleteButton.className = 'icon-btn note-delete';
+        const flagged = note.is_admin && note.is_deleted;
+        deleteButton.style.color = flagged ? '#dc2626' : '#000000';
+        deleteButton.title = flagged ? 'Flagged as deleted — delete options' : 'Delete note';
+        deleteButton.setAttribute('aria-label', deleteButton.title);
+        deleteButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M7.616 20q-.691 0-1.153-.462T6 18.384V6H5V5h4v-.77h6V5h4v1h-1v12.385q0 .69-.462 1.153T16.384 20zm2.192-3h1V8h-1zm3.384 0h1V8h-1z"></path></svg>';
+        deleteButton.addEventListener('click', event => { event.stopPropagation(); deleteNoteFromEntry(note.id); });
+        noteElement.querySelector('.note-actions').insertBefore(deleteButton, noteElement.querySelector('.edit') || noteElement.querySelector('.more-actions-btn'));
         if (note.is_admin) {
             const link = document.createElement('a');
             link.href = `/admin.html?note=${note.id}`;
-            link.textContent = 'Access';
-            noteElement.querySelector('.note-actions').append(link);
+            link.className = 'icon-btn note-access';
+            link.title = 'Manage access';
+            link.setAttribute('aria-label', 'Manage access');
+            link.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M6 22q-.825 0-1.412-.587T4 20V10q0-.825.588-1.412T6 8h1V6q0-2.075 1.463-3.537T12 1t3.538 1.463T17 6v2h1q.825 0 1.413.588T20 10v10q0 .825-.587 1.413T18 22zm7.413-5.587Q14 15.825 14 15t-.587-1.412T12 13t-1.412.588T10 15t.588 1.413T12 17t1.413-.587M9 8h6V6q0-1.25-.875-2.125T12 3t-2.125.875T9 6z"></path></svg>';
+            noteElement.querySelector('.note-actions').insertBefore(link, noteElement.querySelector('.more-actions-btn'));
         }
         return noteElement;
 	}

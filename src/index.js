@@ -711,7 +711,10 @@ async function handleNoteDetail(request, noteId, env) {
 			}
 
 			case 'DELETE': {
-                if (!env.user.isAdmin) {
+                const mode = new URL(request.url).searchParams.get('mode');
+                if (mode && !['flag', 'permanent'].includes(mode)) return jsonResponse({ error: 'Invalid deletion mode' }, 400);
+                if (mode === 'permanent' && !env.user.isAdmin) return jsonResponse({ error: 'Admin access required' }, 403);
+                if (!env.user.isAdmin || mode === 'flag') {
                     await db.batch([
                         db.prepare('INSERT OR REPLACE INTO note_hidden (note_id, user_id, deleted_at) VALUES (?, ?, ?)').bind(id, env.user.id, Date.now()),
                         db.prepare('DELETE FROM public_shares WHERE note_id = ?').bind(id),

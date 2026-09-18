@@ -14,7 +14,7 @@ export async function canEdit(note, env) {
   return !!await env.DB.prepare('SELECT 1 FROM note_permissions WHERE note_id = ? AND user_id = ? AND can_edit = 1').bind(note.id, env.user.id).first();
 }
 export async function decorate(notes, env) {
-  return Promise.all(notes.map(async note => ({ ...note, can_edit: await canEdit(note, env), can_share: await canShare(note, env), is_admin: env.user.isAdmin })));
+  return Promise.all(notes.map(async note => ({ ...note, can_edit: await canEdit(note, env), can_share: await canShare(note, env), is_admin: env.user.isAdmin, ...(env.user.isAdmin ? { is_deleted: !!await env.DB.prepare('SELECT 1 FROM note_hidden WHERE note_id = ? LIMIT 1').bind(note.id).first() } : {}) })));
 }
 export async function authorize(request, env, id) {
   const note = await env.DB.prepare(`SELECT * FROM ${notesSource(env)} WHERE id = ?`).bind(id).first();

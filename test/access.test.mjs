@@ -234,3 +234,19 @@ test('missing login schema returns an actionable database error, not a group err
  try {const response=await f.request('/api/auth/login','anonymous');assert.equal(response.status,503);assert.equal((await response.json()).code,'SSO_DATABASE_MIGRATION_REQUIRED');}
  finally {globalThis.fetch=originalFetch;}
 });
+test('admin can flag without purging; flag status is exposed only to admins',async()=>{
+ const f=fixture();
+ const {publicId}=await (await f.request('/api/notes/1/share','admin','POST',{})).json();
+ assert.equal((await f.request('/api/notes/1?mode=flag','admin','DELETE')).status,204);
+ assert.ok(f.sql.prepare('SELECT id FROM notes WHERE id=1').get());
+ assert.equal(f.sql.prepare('SELECT user_id FROM note_hidden WHERE note_id=1').get().user_id,'admin');
+ assert.equal((await (await f.request('/api/notes/1','admin')).json()).is_deleted,true);
+ const member=await (await f.request('/api/notes/1','alice')).json();assert.equal('is_deleted' in member,false);
+ assert.equal((await f.request(`/api/public/note/${publicId}`,'anonymous')).status,404);
+ assert.equal((await f.request('/api/notes/1?mode=permanent','alice','DELETE')).status,403);
+ assert.equal((await f.request('/api/notes/1?mode=invalid','admin','DELETE')).status,400);
+ await f.request('/api/admin/notes/1/permissions','admin','PUT',{owner_id:'alice',grants:[],restore:['admin']});
+ assert.equal((await (await f.request('/api/notes/1','admin')).json()).is_deleted,false);
+ assert.equal((await f.request('/api/notes/1?mode=permanent','admin','DELETE')).status,204);
+ assert.equal(f.sql.prepare('SELECT id FROM notes WHERE id=1').get(),undefined);
+});

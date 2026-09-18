@@ -58,3 +58,7 @@ The admin page has an **Allow sharing** switch for each user. Sharing remains en
 Admins retain sharing privileges regardless of this user setting. Admin-created links remain active when a member's sharing permission is removed. Ownership and deletion restrictions still apply: enabled members can share only their own unflagged notes; even admins cannot share flagged notes.
 
 Apply migration `0003_user_sharing.sql` using the normal migrations command before deploying. Earlier D1 links lacked creator information, so the migration conservatively attributes those existing links to their note owner. Newly created links distinguish member-created from admin-created links.
+
+## Note deletion controls
+
+Each note has a trash icon before Edit. Administrators see red if any user has flagged the note and black otherwise; members always see black and are not sent the deletion-status field. The admin trash action offers **Flag as deleted** or **Permanently delete**. Flagging uses the existing per-user deletion record, retains the note for administrators, and revokes public shares. An admin's own flag does not hide the note from other authorized readers. Restore flags through the note's lock icon. The access page no longer lists all notes or offers a note-ID chooser.
