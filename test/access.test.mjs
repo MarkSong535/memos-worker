@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
@@ -17,9 +18,10 @@ function fixture() {
  sql.exec(readFileSync(new URL('../migrations/0001_note_permissions.sql', import.meta.url),'utf8'));
  sql.exec(readFileSync(new URL('../migrations/0002_public_shares.sql', import.meta.url),'utf8'));
  sql.exec(readFileSync(new URL('../migrations/0003_user_sharing.sql', import.meta.url),'utf8'));
+ sql.exec(readFileSync(new URL('../migrations/0004_session_hardening.sql', import.meta.url),'utf8'));
  for(const id of ['alice','bob','admin']) {
   sql.prepare('INSERT INTO users (id,issuer,subject,name,email) VALUES (?, ?, ?, ?, ?)').run(id,'https://idp',id,id,`${id}@example.test`);
-  sql.prepare('INSERT INTO auth_sessions VALUES (?, ?, ?, ?)').run(id,id,id==='admin'?1:0,Date.now()+600000);
+  sql.prepare('INSERT INTO auth_sessions VALUES (?, ?, ?, ?, ?)').run(createHash('sha256').update(id.padEnd(64,'-')).digest('hex'),id,id==='admin'?1:0,Date.now()+10800000,Date.now());
  }
  for (const [id,owner] of [[1,'alice'],[2,'bob'],[3,null]]) {
   sql.prepare('INSERT INTO notes(id,content,owner_id,created_at,updated_at) VALUES (?,?,?,?,?)').run(id,`private memo ${id}`,owner,Date.now(),Date.now());
@@ -33,7 +35,7 @@ function fixture() {
  }, async batch(statements){sql.exec('BEGIN');try{const r=await Promise.all(statements.map(s=>s.run()));sql.exec('COMMIT');return r}catch(e){sql.exec('ROLLBACK');throw e}} };
  const deleted=[];
  const env={DB,APP_ORIGIN:'https://n.markso.ng',NOTES_KV:{get:async()=>null,put:async()=>{}},NOTES_R2_BUCKET:{list:async()=>({objects:[],truncated:false}),delete:async keys=>deleted.push(...keys),get:async()=>null,head:async()=>null}};
- async function request(path,user='alice',method='GET',body){return worker.fetch(new Request(`https://n.markso.ng${path}`,{method,headers:{Cookie:`__Host-notes_session=${user}`,Origin:env.APP_ORIGIN,...(body && !(body instanceof FormData)?{'Content-Type':'application/json'}:{})},body:body instanceof FormData?body:body?JSON.stringify(body):undefined}),env,{})}
+ async function request(path,user='alice',method='GET',body){return worker.fetch(new Request(`https://n.markso.ng${path}`,{method,headers:{Cookie:`__Host-notes_session=${user.padEnd(64,'-')}`,Origin:env.APP_ORIGIN,...(body && !(body instanceof FormData)?{'Content-Type':'application/json'}:{})},body:body instanceof FormData?body:body?JSON.stringify(body):undefined}),env,{})}
  return {sql,env,request,deleted};
 }
 test('lists, search, stats, tags, timeline and direct requests enforce ownership',async()=>{
@@ -140,7 +142,25 @@ test('OIDC login uses PKCE and single-use state, creates a session and logs out'
   const wrong=await worker.fetch(new Request(callback),f.env,{});assert.equal(wrong.status,400);
   const request=()=>new Request(callback,{headers:{Cookie:`__Host-notes_oidc=${state}`}});
   const response=await worker.fetch(request(),f.env,{});assert.equal(response.status,302);
-  const session=response.headers.getSetCookie().find(c=>c.startsWith('__Host-notes_session=')).split(';')[0];
+  const sessionCookie=response.headers.getSetCookie().find(c=>c.startsWith('__Host-notes_session='));
+  assert.match(sessionCookie,/Max-Age=10800(?:;|$)/);
+  const session=sessionCookie.split(';')[0];
+  const saved=f.sql.prepare('SELECT expires_at FROM auth_sessions WHERE id=?').get(createHash('sha256').update(session.split('=')[1]).digest('hex'));
+  const remaining=saved.expires_at-Date.now();
+  assert.ok(remaining > 10790000 && remaining <= 10800000);
+  // The mocked ID token expires after five minutes; the application must still
+  // accept this session near the end of the requested three-hour duration.
+  const now=Date.now;
+  Date.now=()=>now()+10799000;
+  try {
+   const later=await worker.fetch(new Request('https://n.markso.ng/api/me',{headers:{Cookie:session}}),f.env,{});
+   assert.equal(later.status,200);
+  } finally {Date.now=now;}
+  Date.now=()=>now()+10801000;
+  try {
+   const expired=await worker.fetch(new Request('https://n.markso.ng/api/me',{headers:{Cookie:session}}),f.env,{});
+   assert.equal(expired.status,401);
+  } finally {Date.now=now;}
   const me=await worker.fetch(new Request('https://n.markso.ng/api/me',{headers:{Cookie:session}}),f.env,{});assert.equal((await me.json()).isAdmin,true);
   assert.equal((await worker.fetch(request(),f.env,{})).status,400);
   assert.equal((await worker.fetch(new Request('https://n.markso.ng/api/auth/logout',{method:'POST',headers:{Cookie:session,Origin:f.env.APP_ORIGIN}}),f.env,{})).status,200);
@@ -249,4 +269,69 @@ test('admin can flag without purging; flag status is exposed only to admins',asy
  assert.equal((await (await f.request('/api/notes/1','admin')).json()).is_deleted,false);
  assert.equal((await f.request('/api/notes/1?mode=permanent','admin','DELETE')).status,204);
  assert.equal(f.sql.prepare('SELECT id FROM notes WHERE id=1').get(),undefined);
+});
+test('database session hashes cannot be replayed as cookie credentials',async()=>{
+ const f=fixture();
+ const hash=f.sql.prepare("SELECT id FROM auth_sessions WHERE user_id='alice'").get().id;
+ assert.equal(hash.length,64);assert.notEqual(hash,'alice'.padEnd(64,'-'));
+ assert.equal((await f.request('/api/me',hash)).status,401);
+ assert.equal((await f.request('/api/me','alice')).status,200);
+});
+test('stale admin session can read/edit but must reauthenticate for sensitive actions',async()=>{
+ const f=fixture();f.sql.prepare('UPDATE auth_sessions SET authenticated_at = ? WHERE user_id = ?').run(Date.now()-601000,'admin');
+ assert.equal((await f.request('/api/notes','admin')).status,200);
+ const edit=new FormData();edit.set('content','routine edit');assert.equal((await f.request('/api/notes/1','admin','PUT',edit)).status,200);
+ for(const [path,method,body] of [
+  ['/api/notes/1?mode=permanent','DELETE'],
+  ['/api/admin/notes/1/permissions','PUT',{owner_id:'alice',grants:[]}],
+  ['/api/admin/users/alice/sharing','PUT',{can_share:false}],
+  ['/api/admin/users/alice/sessions','DELETE'],
+  ['/api/notes/1/share','POST',{}],
+ ]) {const res=await f.request(path,'admin',method,body);assert.equal(res.status,403);assert.equal((await res.json()).code,'REAUTH_REQUIRED');}
+ assert.ok(f.sql.prepare('SELECT id FROM notes WHERE id=1').get());
+ assert.equal((await f.request('/api/notes/1?mode=flag','admin','DELETE')).status,204);
+});
+test('all-device logout and admin session revocation invalidate stored sessions',async()=>{
+ const f=fixture();
+ f.sql.prepare('INSERT INTO auth_sessions VALUES (?, ?, ?, ?, ?)').run(createHash('sha256').update('other'.padEnd(64,'-')).digest('hex'),'alice',0,Date.now()+3600000,Date.now());
+ assert.equal((await f.request('/api/me','other')).status,200);
+ assert.equal((await f.request('/api/auth/logout-all','alice','POST')).status,200);
+ assert.equal((await f.request('/api/me','other')).status,401);assert.equal((await f.request('/api/me','alice')).status,401);
+ assert.equal((await f.request('/api/admin/users/bob/sessions','bob','DELETE')).status,403);
+ assert.equal((await f.request('/api/admin/users/bob/sessions','admin','DELETE')).status,200);
+ assert.equal((await f.request('/api/me','bob')).status,401);
+});
+test('step-up requires a recent auth_time from the verified token',async()=>{
+ const {freshAuthenticationTime}=await import('../src/auth.js');
+ const now=Math.floor(Date.now()/1000), state={reauth_user_id:'admin',started_at:Date.now()};
+ for(const claim of [undefined,now-3600,now+600,'now']) assert.throws(()=>freshAuthenticationTime({auth_time:claim},state));
+ assert.equal(freshAuthenticationTime({auth_time:now},state),now*1000);
+ assert.equal(freshAuthenticationTime({},{}),0);
+});
+test('reauthentication requests fresh identity, rejects account switching, and rotates the session',async()=>{
+ const f=fixture(); const {exportJWK}=await import('jose'); const keys=await generateKeyPair('RS256');
+ const jwk=await exportJWK(keys.publicKey);Object.assign(jwk,{kid:'reauth-key',alg:'RS256'});
+ Object.assign(f.env,{OIDC_DISCOVERY_URL:'https://idp/discovery',OIDC_CLIENT_ID:'client',OIDC_CLIENT_SECRET:'test-only'});
+ let nonce, subject='bob';const originalFetch=globalThis.fetch;
+ globalThis.fetch=async url=>{
+  if(String(url).endsWith('/discovery')) return Response.json({issuer:'https://idp',authorization_endpoint:'https://idp/authorize',token_endpoint:'https://idp/token',jwks_uri:'https://idp/jwks'});
+  if(String(url).endsWith('/jwks'))return Response.json({keys:[jwk]});
+  return Response.json({id_token:await new SignJWT({nonce,groups:['notes_admin'],auth_time:Math.floor(Date.now()/1000)}).setProtectedHeader({alg:'RS256',kid:'reauth-key'}).setIssuer('https://idp').setAudience('client').setSubject(subject).setIssuedAt().setExpirationTime('5m').sign(keys.privateKey)});
+ };
+ try {
+  const callback=async()=>{
+   const res=await f.request('/api/auth/login?reauth=1&return_to=%2Fadmin.html%3Fnote%3D1','admin');
+   assert.equal(res.status,302);const target=new URL(res.headers.get('Location'));
+   assert.equal(target.searchParams.get('prompt'),'login');assert.equal(target.searchParams.get('max_age'),'0');nonce=target.searchParams.get('nonce');
+   const state=target.searchParams.get('state');
+   return worker.fetch(new Request(`https://n.markso.ng/api/auth/callback?code=code&state=${state}`,{headers:{Cookie:`__Host-notes_oidc=${state}; __Host-notes_session=${'admin'.padEnd(64,'-')}`}}),f.env,{});
+  };
+  const switched=await callback();assert.equal((await switched.json()).code,'SSO_REAUTH_FAILED');
+  assert.equal((await f.request('/api/me','admin')).status,200);
+  subject='admin';const result=await callback();assert.equal(result.status,302);assert.equal(result.headers.get('Location'),'https://n.markso.ng/admin.html?note=1');
+  const newCookie=result.headers.getSetCookie().find(c=>c.startsWith('__Host-notes_session=')).split(';')[0];
+  assert.equal((await f.request('/api/me','admin')).status,401);
+  const body=await (await worker.fetch(new Request('https://n.markso.ng/api/me',{headers:{Cookie:newCookie}}),f.env,{})).json();
+  assert.equal(body.id,'admin');assert.ok(Date.now()-body.authenticatedAt<2000);
+ } finally {globalThis.fetch=originalFetch;}
 });

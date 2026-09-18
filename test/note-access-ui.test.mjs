@@ -29,7 +29,7 @@ for (const isAdmin of [true, false]) {
 test('centralized access navigation and stale references are removed', () => {
   assert.doesNotMatch(html, /permissions-link|Manage note access/);
 });
-for (const [isAdmin, isDeleted, expected] of [[true,true,'#dc2626'],[true,false,'#000000'],[false,true,'#000000'],[false,false,'#000000']]) {
+for (const [isAdmin, isDeleted, expected] of [[true,true,'#dc2626'],[true,false,''],[false,true,''],[false,false,'']]) {
   test(`delete icon precedes edit and respects admin-only flag status (${isAdmin}, ${isDeleted})`, () => {
     const start = html.indexOf("        const deleteButton = document.createElement('button');");
     const end = html.indexOf('        if (note.is_admin) {', start);

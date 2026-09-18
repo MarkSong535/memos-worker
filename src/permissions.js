@@ -41,6 +41,11 @@ export async function adminRoute(request, env) {
   if (path === '/api/admin/users' && request.method === 'GET') {
     return json((await env.DB.prepare('SELECT id, name, email, can_share FROM users ORDER BY name').all()).results);
   }
+  const sessionMatch = path.match(/^\/api\/admin\/users\/([^/]+)\/sessions$/);
+  if (sessionMatch && request.method === 'DELETE') {
+    await env.DB.prepare('DELETE FROM auth_sessions WHERE user_id = ?').bind(decodeURIComponent(sessionMatch[1])).run();
+    return json({ success: true });
+  }
   const userMatch = path.match(/^\/api\/admin\/users\/([^/]+)\/sharing$/);
   if (userMatch) {
     if (request.method !== 'PUT') return json({ error: 'Method not allowed' }, 405);

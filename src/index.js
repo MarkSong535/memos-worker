@@ -1,5 +1,5 @@
 import { manageShare, publicShare, listShares } from './sharing.js';
-import { authRoute, authenticate } from './auth.js';
+import { authRoute, authenticate, requireFreshAuthentication } from './auth.js';
 import { notesSource, authorize, adminRoute, decorate, imageAllowed, validateMediaReferences } from './permissions.js';
 const NOTES_PER_PAGE = 10;
 const SESSION_DURATION_SECONDS = 30*86400; // Session 有效期: 30 天
@@ -11,6 +11,8 @@ export default {
             const headers = new Headers(response.headers);
             headers.set('Cache-Control', 'private, no-store');
             headers.set('X-Content-Type-Options', 'nosniff');
+            headers.set('Referrer-Policy', 'same-origin');
+            headers.set('X-Frame-Options', 'DENY');
             if (/^\/api\/(files|images)\//.test(new URL(request.url).pathname)) {
                 headers.set('Content-Security-Policy', "sandbox; default-src 'none'; style-src 'unsafe-inline'");
             }
@@ -103,6 +105,15 @@ async function handleApiRequest(request, env) {
 	}
 
 	env = { ...env, user: session };
+    const sensitiveAdminAction = session.isAdmin && !['GET', 'HEAD'].includes(request.method) && (
+        pathname.startsWith('/api/admin/') ||
+        (request.method === 'DELETE' && /^\/api\/notes\/\d+$/.test(pathname) && new URL(request.url).searchParams.get('mode') !== 'flag') ||
+        (request.method === 'POST' && /\/share$/.test(pathname))
+    );
+    if (sensitiveAdminAction) {
+        const denial = requireFreshAuthentication(session);
+        if (denial) return denial;
+    }
     if (pathname === '/api/me') return jsonResponse(session);
     if (pathname.startsWith('/api/admin/')) return adminRoute(request, env);
     if (pathname.startsWith('/api/docs') && !session.isAdmin) return jsonResponse({ error: 'Admin access required' }, 403);

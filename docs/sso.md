@@ -47,7 +47,7 @@ Clearing a note's content cannot silently delete it. Removing an attachment duri
 
 The login flow uses authorization code + PKCE, an HttpOnly state cookie, atomic single-use state, and signature/issuer/audience/expiry/nonce validation using `jose`. Identity is keyed by OIDC issuer + subject, not email. Users missing both groups are rejected. The legacy password login and old session cookies are not accepted.
 
-Sessions last at most five minutes (or the remaining ID-token lifetime if shorter), so changed group membership is reconsidered on the next login within that bound. Logout ends this application's session; it does not end the Authentik browser session. A new sign-in can therefore reuse Authentik SSO.
+Sessions last three hours after successful login, independently of the ID token’s remaining lifetime. The ID token must still be valid when establishing the session. Authentik group changes take effect on the next login, within that three-hour bound; app-managed note and sharing permissions are checked on each request. Existing sessions retain their original expiry until the next login. Logout ends this application's session; it does not end the Authentik browser session. A new sign-in can therefore reuse Authentik SSO.
 
 `npm test` runs the real request handler against an in-memory SQLite database with the migration, plus signed-token and mocked-provider callback tests. `npx wrangler deploy --dry-run` checks bundling without deployment. A real browser login must still be verified against the configured Authentik provider and production secret.
 
@@ -61,4 +61,14 @@ Apply migration `0003_user_sharing.sql` using the normal migrations command befo
 
 ## Note deletion controls
 
-Each note has a trash icon before Edit. Administrators see red if any user has flagged the note and black otherwise; members always see black and are not sent the deletion-status field. The admin trash action offers **Flag as deleted** or **Permanently delete**. Flagging uses the existing per-user deletion record, retains the note for administrators, and revokes public shares. An admin's own flag does not hide the note from other authorized readers. Restore flags through the note's lock icon. The access page no longer lists all notes or offers a note-ID chooser.
+Each note has a trash icon before Edit. Administrators see red if any user has flagged the note and the normal theme icon color otherwise; members always see the normal theme icon color and are not sent the deletion-status field. The admin trash action offers **Flag as deleted** or **Permanently delete**. Flagging uses the existing per-user deletion record, retains the note for administrators, and revokes public shares. An admin's own flag does not hide the note from other authorized readers. Restore flags through the note's lock icon. The access page no longer lists all notes or offers a note-ID chooser.
+
+## Session hardening
+
+Apply `0004_session_hardening.sql` before deploying this version. It invalidates old sessions and pending login attempts once; users then sign in again. Database session IDs are now SHA-256 hashes of random cookie tokens. The browser still receives the random token in the Secure, HttpOnly, SameSite=Lax, host-only cookie. A copied database hash cannot be used as a login cookie. A stolen browser cookie can still be replayed, so this is not device-bound authentication.
+
+Normal sessions retain their three-hour absolute lifetime. Successful login and reauthentication replace the current browser's old session token. **Sign out all devices** revokes every session for the current account. Admins also have a per-user session-revocation button beside the sharing controls. This ends Notes sessions, not the user's Authentik session or future login eligibility.
+
+Admin permission changes, user session revocation, public-share creation/updates, and permanent note deletion require verified authentication within the previous ten minutes. Reading, editing, and flagging notes do not require this extra check. The app requests OIDC `prompt=login` and `max_age=0`, validates the signed `auth_time`, and requires the same issuer/subject as the original account. Authentik must honor fresh-login requests and return `auth_time`; missing/stale claims are rejected. Configure MFA in the Authentik flow if required; the app does not claim that this step necessarily invokes MFA. Actions are not automatically replayed after reauthentication: repeat the action after returning.
+
+The UI uses anti-framing and restrictive base/object policies. Existing origin checks protect state-changing requests; API responses remain non-cacheable. No hardware identifier or browser fingerprint is treated as a credential.

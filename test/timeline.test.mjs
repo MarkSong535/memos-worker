@@ -16,7 +16,7 @@ for (const timezone of ['UTC', 'America/New_York', 'America/Kentucky/Louisville'
     await vm.runInNewContext(requestCode, {
       document: { getElementById: () => ({}) },
       Intl: { DateTimeFormat: () => ({ resolvedOptions: () => ({ timeZone: timezone }) }) },
-      fetch: async (url) => { requestedUrl = url; return { ok: true }; },
+      appFetch: async (url) => { requestedUrl = url; return { ok: true }; },
     });
     const url = new URL(requestedUrl, 'https://n.markso.ng');
     assert.equal(url.pathname, '/api/notes/timeline');

@@ -2,10 +2,21 @@ const $ = id => document.getElementById(id);
 let users = [], active;
 async function api(path, options = {}) {
   const res = await fetch(path, options);
-  if (!res.ok) throw new Error(res.status === 401 ? 'Session expired. Return to Notes and sign in again.' : (await res.text()));
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw Object.assign(new Error(res.status === 401 ? 'Session expired. Return to Notes and sign in again.' : detail.error || 'Request failed'), { code: detail.code });
+  }
   return res.status === 204 ? null : res.json();
 }
-function report(error) { $('status').textContent = error.message; }
+function report(error) {
+  $('status').textContent = error.message;
+  if (error.code === 'REAUTH_REQUIRED') {
+    const link = document.createElement('a');
+    link.href = `/api/auth/login?reauth=1&return_to=${encodeURIComponent(location.pathname + location.search)}`;
+    link.textContent = ' Verify identity, then repeat your action.';
+    $('status').append(link);
+  }
+}
 function option(value, label) { const el = document.createElement('option'); el.value = value; el.textContent = label; return el; }
 function renderUserSharing() {
   $('user-sharing').replaceChildren();
@@ -23,6 +34,14 @@ function renderUserSharing() {
       } catch (error) { toggle.checked = !!user.can_share; report(error); }
       finally { toggle.disabled = false; }
     };
+    const revoke = document.createElement('button');
+    revoke.textContent = 'Sign out all devices';
+    revoke.onclick = async () => {
+      if (!confirm(`End all Notes sessions for ${user.name}?`)) return;
+      try { await api(`/api/admin/users/${encodeURIComponent(user.id)}/sessions`, { method: 'DELETE' }); $('status').textContent = `Sessions ended for ${user.name}.`; }
+      catch (error) { report(error); }
+    };
+    label.append(revoke);
     $('user-sharing').append(label);
   }
 }
