@@ -1,9 +1,24 @@
+import { manageShare, publicShare, listShares } from './sharing.js';
+import { authRoute, authenticate } from './auth.js';
+import { notesSource, authorize, adminRoute, decorate, imageAllowed, validateMediaReferences } from './permissions.js';
 const NOTES_PER_PAGE = 10;
 const SESSION_DURATION_SECONDS = 30*86400; // Session 有效期: 30 天
 const SESSION_COOKIE = '__session';
 export default {
 	async fetch(request, env, ctx) {
-		return await handleApiRequest(request, env);
+		try {
+            const response = await handleApiRequest(request, env);
+            const headers = new Headers(response.headers);
+            headers.set('Cache-Control', 'private, no-store');
+            headers.set('X-Content-Type-Options', 'nosniff');
+            if (/^\/api\/(files|images)\//.test(new URL(request.url).pathname)) {
+                headers.set('Content-Security-Policy', "sandbox; default-src 'none'; style-src 'unsafe-inline'");
+            }
+            return new Response(response.body, { status: response.status, headers });
+        } catch (error) {
+            console.error('Request failed:', error.message);
+            return jsonResponse({ error: 'Request failed' }, 500);
+        }
 	},
 };
 
@@ -12,6 +27,17 @@ export default {
  */
 async function handleApiRequest(request, env) {
 	const { pathname } = new URL(request.url);
+    if (pathname.startsWith('/api/public/')) return publicShare(request, env);
+    if (pathname.startsWith('/api/auth/')) return authRoute(request, env);
+    if (!['GET', 'HEAD'].includes(request.method) && request.headers.get('Origin') !== new URL(request.url).origin) {
+        return jsonResponse({ error: 'Invalid request origin' }, 403);
+    }
+    // Public links and unauthenticated integrations cannot bypass note permissions.
+    if (pathname.startsWith('/api/telegram_webhook/') || pathname.startsWith('/api/tg-media-proxy/')) {
+        return jsonResponse({ error: 'Not found' }, 404);
+    }
+    if (pathname === '/api/login') return jsonResponse({ error: 'Use SSO to sign in' }, 403);
+
 
 	// --- Memos 分享公开路由 ---
 	// 匹配分享页面 /share/some-uuid
@@ -60,19 +86,33 @@ async function handleApiRequest(request, env) {
 	}
 
 	if (request.method === 'POST' && pathname === '/api/login') {
-		return handleLogin(request, env);
+		return jsonResponse({ error: 'Use SSO' }, 403);
 	}
 	if (request.method === 'POST' && pathname === '/api/logout') {
-		return handleLogout(request, env);
+		return authRoute(new Request(new URL('/api/auth/logout', request.url), request), env);
 	}
 
 	// --- 从这里开始，所有 API 都需要认证 ---
-	const session = await isSessionAuthenticated(request, env);
+	const session = await authenticate(request, env);
 	if (!session) {
 		return jsonResponse({ error: 'Unauthorized' }, 401);
 	}
 
-	if (request.method === 'POST' && pathname === '/api/notes/merge') {
+	env = { ...env, user: session };
+    if (pathname === '/api/me') return jsonResponse(session);
+    if (pathname.startsWith('/api/admin/')) return adminRoute(request, env);
+    if (pathname.startsWith('/api/docs') && !session.isAdmin) return jsonResponse({ error: 'Admin access required' }, 403);
+    if (pathname === '/api/shares' && request.method === 'GET') return listShares(env);
+    const sharing = pathname.match(/^\/api\/notes\/(\d+)(?:\/files\/([a-zA-Z0-9-]+))?\/share$/);
+    if (sharing) return manageShare(request, env, Number(sharing[1]), sharing[2] || null);
+    if (pathname === '/api/notes/merge') return jsonResponse({ error: 'Merging is disabled to preserve ownership and deleted notes' }, 409);
+    const noteRoute = pathname.match(/^\/api\/(?:notes|files)\/([^/]+)(?:\/|$)/);
+    if (noteRoute && noteRoute[1] !== 'timeline') {
+        if (!/^\d+$/.test(noteRoute[1]) || !Number.isSafeInteger(Number(noteRoute[1]))) return jsonResponse({ error: 'Invalid note ID' }, 400);
+        const denial = await authorize(request, env, Number(noteRoute[1]));
+        if (denial) return denial;
+    }
+    if (request.method === 'POST' && pathname === '/api/notes/merge') {
 		return handleMergeNotes(request, env);
 	}
 
@@ -194,9 +234,9 @@ async function handleApiRequest(request, env) {
 async function handleStatsRequest(request, env) {
 	const db = env.DB;
 	try {
-		const memosCountQuery = db.prepare("SELECT COUNT(*) as total FROM notes");
-		const tagsCountQuery = db.prepare("SELECT COUNT(DISTINCT tag_id) as total FROM note_tags");
-		const oldestNoteQuery = db.prepare("SELECT MIN(updated_at) as oldest_ts FROM notes");
+		const memosCountQuery = db.prepare(`SELECT COUNT(*) as total FROM ${notesSource(env)}`);
+		const tagsCountQuery = db.prepare(`SELECT COUNT(DISTINCT tag_id) as total FROM note_tags WHERE note_id IN (SELECT id FROM ${notesSource(env)})`);
+		const oldestNoteQuery = db.prepare(`SELECT MIN(updated_at) as oldest_ts FROM ${notesSource(env)}`);
 
 		// 使用 Promise.all 并行执行所有查询，以获得最佳性能
 		const [memosResult, tagsResult, oldestNoteResult] = await Promise.all([
@@ -229,7 +269,7 @@ async function handleTimelineRequest(request, env) {
 		// D1 不直接支持 strftime 或 to_char, 我们需要获取所有创建时间，然后在 JS 中处理
 		// 注意：如果笔记数量巨大 (几十万条)，这个查询可能会有性能问题。
 		// 对于几千到几万条笔记，这是完全可以接受的。
-		const stmt = db.prepare("SELECT updated_at FROM notes ORDER BY updated_at DESC");
+		const stmt = db.prepare(`SELECT updated_at FROM ${notesSource(env)} ORDER BY updated_at DESC`);
 		const { results } = await stmt.all();
 		if (!results) {
 			return jsonResponse({});
@@ -328,7 +368,7 @@ async function handleSearchRequest(request, env) {
 
 		const whereString = whereClauses.join(" AND ");
 		const stmt = db.prepare(`
-            SELECT n.* FROM notes n
+            SELECT n.* FROM ${notesSource(env)} n
             JOIN notes_fts fts ON n.id = fts.rowid
             ${joinClause}
             WHERE ${whereString}
@@ -347,7 +387,7 @@ async function handleSearchRequest(request, env) {
 				try { note.files = JSON.parse(note.files); } catch (e) { note.files = []; }
 			}
 		});
-		return jsonResponse({ notes, hasMore });
+		return jsonResponse({ notes: await decorate(notes, env), hasMore });
 	} catch (e) {
 		console.error("Search Error:", e.message);
 		return jsonResponse({ error: 'Database Error', message: e.message }, 500);
@@ -365,7 +405,8 @@ async function handleTagsList(request, env) {
 		const stmt = db.prepare(`
             SELECT t.name, COUNT(nt.note_id) as count
             FROM tags t
-            LEFT JOIN note_tags nt ON t.id = nt.tag_id
+            JOIN note_tags nt ON t.id = nt.tag_id
+            JOIN ${notesSource(env)} n ON n.id = nt.note_id
             GROUP BY t.id, t.name
             HAVING count > 0 -- 只返回被使用过的标签
             ORDER BY count DESC, t.name ASC
@@ -381,58 +422,6 @@ async function handleTagsList(request, env) {
 /**
  * 检查 Session Cookie 是否有效
  */
-async function isSessionAuthenticated(request, env) {
-	const cookieHeader = request.headers.get('Cookie');
-	if (!cookieHeader || !cookieHeader.includes(SESSION_COOKIE)) {
-		return null;
-	}
-	const cookies = cookieHeader.split(';').map(c => c.trim());
-	const sessionCookie = cookies.find(c => c.startsWith(`${SESSION_COOKIE}=`));
-	if (!sessionCookie) return null;
-	const sessionId = sessionCookie.split('=')[1];
-	if (!sessionId) return null;
-	const session = await env.NOTES_KV.get(`session:${sessionId}`, 'json');
-	return session || null;
-}
-
-/**
- * 处理登录请求
- */
-async function handleLogin(request, env) {
-	try {
-		const { username, password } = await request.json();
-		if (username === env.USERNAME && password === env.PASSWORD) {
-			const sessionId = crypto.randomUUID();
-			const sessionData = { username, loggedInAt: Date.now() };
-			await env.NOTES_KV.put(`session:${sessionId}`, JSON.stringify(sessionData), {
-				expirationTtl: SESSION_DURATION_SECONDS,
-			});
-			const headers = new Headers();
-			headers.append('Set-Cookie', `${SESSION_COOKIE}=${sessionId}; HttpOnly; Secure; SameSite=Strict; Max-Age=${SESSION_DURATION_SECONDS}`);
-			return jsonResponse({ success: true }, 200, headers);
-		}
-	} catch (e) {
-		console.error("Login Error:", e.message);
-	}
-	return jsonResponse({ error: 'Invalid credentials' }, 401);
-}
-
-/**
- * 处理退出登录请求
- */
-async function handleLogout(request, env) {
-	const cookieHeader = request.headers.get('Cookie');
-	if (cookieHeader && cookieHeader.includes(SESSION_COOKIE)) {
-		const sessionId = cookieHeader.match(new RegExp(`${SESSION_COOKIE}=([^;]+)`))?.[1];
-		if (sessionId) {
-			await env.NOTES_KV.delete(`session:${sessionId}`);
-		}
-	}
-	const headers = new Headers();
-	headers.append('Set-Cookie', `${SESSION_COOKIE}=; HttpOnly; Secure; SameSite=Strict; Max-Age=0`);
-	return jsonResponse({ success: true }, 200, headers);
-}
-
 /**
  * 从 KV 中获取用户设置。如果 KV 中没有，则返回默认值。
  */
@@ -465,13 +454,13 @@ async function handleGetSettings(request, env) {
 		enableContentTruncation: false,
 	};
 
-	let savedSettings = await env.NOTES_KV.get('user_settings', 'json');
+	let savedSettings = await env.NOTES_KV.get(`user_settings:${env.user.id}`, 'json');
 
 	// 如果 KV 中没有设置，则返回默认值
 	if (!savedSettings) {
-		return jsonResponse(defaultSettings);
+		return jsonResponse({ ...defaultSettings, enableSharing: true, showDocs: env.user.isAdmin });
 	}
-	return jsonResponse(savedSettings);
+	return jsonResponse({ ...savedSettings, enableSharing: true, showDocs: env.user.isAdmin && savedSettings.showDocs });
 }
 
 /**
@@ -480,7 +469,7 @@ async function handleGetSettings(request, env) {
 async function handleSetSettings(request, env) {
 	try {
 		const settingsToSave = await request.json();
-		await env.NOTES_KV.put('user_settings', JSON.stringify(settingsToSave));
+		await env.NOTES_KV.put(`user_settings:${env.user.id}`, JSON.stringify(settingsToSave));
 		return jsonResponse({ success: true });
 	} catch (e) {
 		console.error("Set Settings Error:", e.message);
@@ -543,7 +532,7 @@ async function handleNotesList(request, env) {
 				const whereClause = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
 
 				const query = `
-                SELECT n.* FROM notes n
+                SELECT n.* FROM ${notesSource(env)} n
                 ${joinClause}
                 ${whereClause}
                 ORDER BY n.is_pinned DESC, n.updated_at DESC
@@ -565,12 +554,13 @@ async function handleNotesList(request, env) {
 					}
 				});
 
-				return jsonResponse({ notes, hasMore });
+				return jsonResponse({ notes: await decorate(notes, env), hasMore });
 			}
 
 			case 'POST': {
 				const formData = await request.formData();
 				const content = formData.get('content')?.toString() || '';
+                if (!await validateMediaReferences(content, env)) return jsonResponse({ error: 'Media access denied' }, 403);
 				const files = formData.getAll('file');
 
 				if (!content.trim() && files.every(f => !f.name)) {
@@ -585,11 +575,11 @@ async function handleNotesList(request, env) {
 
 				// 【核心修改】在 INSERT 语句中加入新的 pics 字段
 				const insertStmt = db.prepare(
-					"INSERT INTO notes (content, files, is_pinned, created_at, updated_at, pics) VALUES (?, ?, 0, ?, ?, ?) RETURNING id"
+					"INSERT INTO notes (content, files, is_pinned, created_at, updated_at, pics, owner_id) VALUES (?, ?, 0, ?, ?, ?, ?) RETURNING id"
 				);
 				// 先用一个空的 files 数组插入
 				// 【核心修改】将提取出的 picUrls 绑定到 SQL 语句中
-				const { id: noteId } = await insertStmt.bind(content, "[]", now, now, picUrls).first();
+				const { id: noteId } = await insertStmt.bind(content, "[]", now, now, picUrls, env.user.id).first();
 				if (!noteId) {
 					throw new Error("Failed to create note and get ID.");
 				}
@@ -612,12 +602,12 @@ async function handleNotesList(request, env) {
 
 				await processNoteTags(db, noteId, content);
 				// 获取完整的笔记返回给前端
-				const newNote = await db.prepare("SELECT * FROM notes WHERE id = ?").bind(noteId).first();
+				const newNote = await db.prepare(`SELECT * FROM ${notesSource(env)} WHERE id = ?`).bind(noteId).first();
 				if (typeof newNote.files === 'string') {
 					newNote.files = JSON.parse(newNote.files);
 				}
 
-				return jsonResponse(newNote, 201);
+				return jsonResponse((await decorate([newNote], env))[0], 201);
 			}
 		}
 	} catch (e) {
@@ -638,7 +628,7 @@ async function handleNoteDetail(request, noteId, env) {
 
 	try {
 		// 首先获取现有笔记，用于文件删除和返回数据
-		let existingNote = await db.prepare("SELECT * FROM notes WHERE id = ?").bind(id).first();
+		let existingNote = await db.prepare(`SELECT * FROM ${notesSource(env)} WHERE id = ?`).bind(id).first();
 		if (!existingNote) {
 			return new Response('Not Found', { status: 404 });
 		}
@@ -652,37 +642,25 @@ async function handleNoteDetail(request, noteId, env) {
 		}
 
 		switch (request.method) {
-			case 'PUT': {
-				const formData = await request.formData();
+			case 'GET': return jsonResponse((await decorate([existingNote], env))[0]);
+            case 'PUT': {
+                const formData = await request.formData();
+                if (formData.has('content') && !String(formData.get('content')).trim()) return jsonResponse({ error: 'Use Delete to remove a note; emptying a note does not delete it' }, 400);
 				const shouldUpdateTimestamp = formData.get('update_timestamp') !== 'false';
 
 				if (formData.has('content')) {
 					const content = formData.get('content')?.toString() ?? existingNote.content;
+                    if (!await validateMediaReferences(content, env)) return jsonResponse({ error: 'Media access denied' }, 403);
 					let currentFiles = existingNote.files;
 
 					// --- 现在的文件处理只关心非图片附件 ---
 					// 处理附件删除 (逻辑不变，因为它操作的是 files 字段)
 					const filesToDelete = JSON.parse(formData.get('filesToDelete') || '[]');
 					if (filesToDelete.length > 0) {
-						const r2KeysToDelete = filesToDelete.map(fileId => `${id}/${fileId}`);
-						await env.NOTES_R2_BUCKET.delete(r2KeysToDelete);
+												// Retain detached files until an administrator permanently deletes the note.
 						currentFiles = currentFiles.filter(file => !filesToDelete.includes(file.id));
 					}
 
-					// 在处理完文件删除后，检查笔记是否应该被删除
-					const hasNewFiles = formData.getAll('file').some(f => f.name && f.size > 0);
-					if (content.trim() === '' && currentFiles.length === 0 && !hasNewFiles) {
-						// 笔记即将变空，执行删除操作
-						// 1. 删除 R2 中的所有剩余文件（如果有的话，虽然逻辑上这里 currentFiles 应该是空的）
-						const allR2Keys = existingNote.files.map(file => `${id}/${file.id}`);
-						if (allR2Keys.length > 0) {
-							await env.NOTES_R2_BUCKET.delete(allR2Keys);
-						}
-						// 2. 从数据库删除笔记
-						await db.prepare("DELETE FROM notes WHERE id = ?").bind(id).run();
-						// 3. 返回特殊标记，告知前端整个笔记已被删除
-						return jsonResponse({ success: true, noteDeleted: true });
-					}
 					// 处理新附件上传
 					const newFiles = formData.getAll('file');
 					for (const file of newFiles) {
@@ -721,15 +699,22 @@ async function handleNoteDetail(request, noteId, env) {
 					await stmt.bind(isArchived, id).run();
 				}
 
-				const updatedNote = await db.prepare("SELECT * FROM notes WHERE id = ?").bind(id).first();
+				const updatedNote = await db.prepare(`SELECT * FROM ${notesSource(env)} WHERE id = ?`).bind(id).first();
 				if (typeof updatedNote.files === 'string') {
 					updatedNote.files = JSON.parse(updatedNote.files);
 				}
-				return jsonResponse(updatedNote);
+				return jsonResponse((await decorate([updatedNote], env))[0]);
 			}
 
 			case 'DELETE': {
-				let allR2KeysToDelete = [];
+                if (!env.user.isAdmin) {
+                    await db.batch([
+                        db.prepare('INSERT OR REPLACE INTO note_hidden (note_id, user_id, deleted_at) VALUES (?, ?, ?)').bind(id, env.user.id, Date.now()),
+                        db.prepare('DELETE FROM public_shares WHERE note_id = ?').bind(id),
+                    ]);
+                    return new Response(null, { status: 204 });
+                }
+                let allR2KeysToDelete = [];
 
 				if (existingNote.files && existingNote.files.length > 0) {
 					const attachmentKeys = existingNote.files
@@ -755,14 +740,33 @@ async function handleNoteDetail(request, noteId, env) {
 						return null;
 					}).filter(key => key !== null);
 
-					allR2KeysToDelete.push(...imageKeys);
+					for (const key of imageKeys) {
+                        const url = key.startsWith('uploads/') ? `/api/images/${key.slice(8)}` : `/api/files/${key}`;
+                        const referenced = await db.prepare("SELECT id FROM notes WHERE id != ? AND (instr(content, ?) > 0 OR instr(COALESCE(pics, ''), ?) > 0) LIMIT 1").bind(id, url, url).first();
+                        if (!referenced) allR2KeysToDelete.push(key);
+                    }
 				}
 
+                // Include detached attachments retained during edits.
+                let cursor;
+                do {
+                    const page = await env.NOTES_R2_BUCKET.list({ prefix: `${id}/`, ...(cursor ? { cursor } : {}) });
+                    allR2KeysToDelete.push(...page.objects.map(object => object.key));
+                    cursor = page.truncated ? page.cursor : undefined;
+                } while (cursor);
+                allR2KeysToDelete = [...new Set(allR2KeysToDelete)];
 				if (allR2KeysToDelete.length > 0) {
-					await env.NOTES_R2_BUCKET.delete(allR2KeysToDelete);
+					for (let offset = 0; offset < allR2KeysToDelete.length; offset += 1000) {
+                        await env.NOTES_R2_BUCKET.delete(allR2KeysToDelete.slice(offset, offset + 1000));
+                    }
 				}
 
-				await db.prepare("DELETE FROM notes WHERE id = ?").bind(id).run();
+				await db.batch([
+                    db.prepare('DELETE FROM note_permissions WHERE note_id = ?').bind(id),
+                    db.prepare('DELETE FROM note_hidden WHERE note_id = ?').bind(id),
+                    db.prepare('DELETE FROM note_tags WHERE note_id = ?').bind(id),
+                    db.prepare('DELETE FROM notes WHERE id = ?').bind(id),
+                ]);
 
 				return new Response(null, { status: 204 });
 			}
@@ -781,7 +785,7 @@ async function handleFileRequest(noteId, fileId, request, env) {
 	}
 
 	// 尝试从数据库获取元数据
-	const note = await db.prepare("SELECT files FROM notes WHERE id = ?").bind(id).first();
+	const note = await db.prepare(`SELECT files FROM ${notesSource(env)} WHERE id = ?`).bind(id).first();
 
 	// 【核心修改】即使 note 不存在或 files 为空，我们也不立即返回 404，
 	// 因为图片可能只记录在 pics 字段中。
@@ -1048,7 +1052,7 @@ async function handleTelegramWebhook(request, env, secret) {
 			return new Response('OK', { status: 200 });
 		}
 		const defaultSettings = { telegramProxy: false };
-		let userSettings = await env.NOTES_KV.get('user_settings', 'json');
+		let userSettings = await env.NOTES_KV.get(`user_settings:${env.user.id}`, 'json');
 		if (!userSettings) {
 			userSettings = defaultSettings;
 		}
@@ -1283,6 +1287,7 @@ async function handleStandaloneImageUpload(request, env) {
 		// 将文件流上传到 R2
 		await env.NOTES_R2_BUCKET.put(r2Key, file.stream(), {
 			httpMetadata: { contentType: file.type },
+            customMetadata: { ownerId: env.user.id },
 		});
 
 		// 返回一个可用于访问此图片的内部 URL
@@ -1354,7 +1359,7 @@ async function handleGetAllAttachments(request, env) {
                 SELECT
                     n.id AS noteId, n.updated_at AS timestamp, 'image' AS type,
                     json_each.value AS url, NULL AS name, NULL AS size, NULL AS id
-                FROM notes n, json_each(n.pics) AS json_each
+                FROM ${notesSource(env)} n, json_each(n.pics) AS json_each
                 WHERE json_valid(n.pics) AND json_array_length(n.pics) > 0
 
                 UNION ALL
@@ -1362,7 +1367,7 @@ async function handleGetAllAttachments(request, env) {
                 SELECT
                     n.id AS noteId, n.updated_at AS timestamp, 'video' AS type,
                     json_each.value AS url, NULL AS name, NULL AS size, NULL AS id
-                FROM notes n, json_each(n.videos) AS json_each
+                FROM ${notesSource(env)} n, json_each(n.videos) AS json_each
                 WHERE json_valid(n.videos) AND json_array_length(n.videos) > 0
 
                 UNION ALL
@@ -1372,7 +1377,7 @@ async function handleGetAllAttachments(request, env) {
                     NULL AS url, json_extract(json_each.value, '$.name') AS name,
                     json_extract(json_each.value, '$.size') AS size,
                     json_extract(json_each.value, '$.id') AS id
-                FROM notes n, json_each(n.files) AS json_each
+                FROM ${notesSource(env)} n, json_each(n.files) AS json_each
                 WHERE json_valid(n.files) AND json_array_length(n.files) > 0
             )
             SELECT * FROM combined_attachments
@@ -1386,6 +1391,12 @@ async function handleGetAllAttachments(request, env) {
 
 		const hasMore = attachmentsPlusOne.length > limit;
 		const attachments = attachmentsPlusOne.slice(0, limit);
+        for (const attachment of attachments) {
+            const note = await db.prepare(`SELECT * FROM ${notesSource(env)} WHERE id = ?`).bind(attachment.noteId).first();
+            const decorated = (await decorate([note], env))[0];
+            attachment.can_share = decorated.can_share;
+            attachment.can_edit = decorated.can_edit;
+        }
 
 		return jsonResponse({
 			attachments: attachments,
@@ -1405,6 +1416,7 @@ async function handleGetAllAttachments(request, env) {
  * @returns {Promise<Response>}
  */
 async function handleServeStandaloneImage(imageId, env) {
+	if (!await imageAllowed(imageId, env)) return jsonResponse({ error: 'Not found' }, 404);
 	const r2Key = `uploads/${imageId}`;
 	const object = await env.NOTES_R2_BUCKET.get(r2Key);
 
@@ -1701,7 +1713,7 @@ async function handleListSharesRequest(request, env) {
 		let notesById = new Map();
 		if (noteIds.length > 0) {
 			const placeholders = noteIds.map(() => '?').join(', ');
-			const stmt = db.prepare(`SELECT id, content, updated_at FROM notes WHERE id IN (${placeholders})`);
+			const stmt = db.prepare(`SELECT id, content, updated_at FROM ${notesSource(env)} WHERE id IN (${placeholders})`);
 			const { results } = await stmt.bind(...noteIds).all();
 			notesById = new Map((results || []).map(note => [note.id, note]));
 		}
@@ -1729,7 +1741,7 @@ async function handleListSharesRequest(request, env) {
 				json_extract(json_each.value, '$.size') AS size,
 				json_extract(json_each.value, '$.type') AS type,
 				json_extract(json_each.value, '$.public_id') AS publicId
-			FROM notes n, json_each(n.files) AS json_each
+			FROM ${notesSource(env)} n, json_each(n.files) AS json_each
 			WHERE json_valid(n.files)
 				AND json_array_length(n.files) > 0
 				AND json_extract(json_each.value, '$.public_id') IS NOT NULL
@@ -1772,7 +1784,7 @@ async function handleShareFileRequest(noteId, fileId, request, env) {
 	}
 
 	try {
-		const note = await db.prepare("SELECT files FROM notes WHERE id = ?").bind(id).first();
+		const note = await db.prepare(`SELECT files FROM ${notesSource(env)} WHERE id = ?`).bind(id).first();
 		if (!note) {
 			return jsonResponse({ error: 'Note not found' }, 404);
 		}
@@ -1829,7 +1841,7 @@ async function handleUnshareFileRequest(noteId, fileId, env) {
 	}
 
 	try {
-		const note = await db.prepare("SELECT files FROM notes WHERE id = ?").bind(id).first();
+		const note = await db.prepare(`SELECT files FROM ${notesSource(env)} WHERE id = ?`).bind(id).first();
 		if (!note) {
 			return jsonResponse({ error: 'Note not found' }, 404);
 		}
@@ -2017,7 +2029,7 @@ async function handlePublicNoteRequest(publicId, env) {
 	const noteId = kvData.noteId;
 
 	try {
-		const note = await env.DB.prepare("SELECT id, content, updated_at, files FROM notes WHERE id = ?").bind(noteId).first();
+		const note = await env.DB.prepare(`SELECT id, content, updated_at, files FROM ${notesSource(env)} WHERE id = ?`).bind(noteId).first();
 		if (!note) {
 			return jsonResponse({ error: 'Shared note content not found' }, 404);
 		}
@@ -2104,7 +2116,7 @@ async function handlePublicRawNoteRequest(publicId, env) {
 
 	try {
 		// 2. 使用获取到的 noteId 从 D1 查询笔记内容
-		const note = await env.DB.prepare("SELECT content FROM notes WHERE id = ?").bind(kvData.noteId).first();
+		const note = await env.DB.prepare(`SELECT content FROM ${notesSource(env)} WHERE id = ?`).bind(kvData.noteId).first();
 		if (!note) {
 			return new Response('Not Found', { status: 404 });
 		}
@@ -2131,8 +2143,8 @@ async function handleMergeNotes(request, env) {
 		}
 
 		const [sourceNote, targetNote] = await Promise.all([
-			db.prepare("SELECT * FROM notes WHERE id = ?").bind(sourceNoteId).first(),
-			db.prepare("SELECT * FROM notes WHERE id = ?").bind(targetNoteId).first(),
+			db.prepare(`SELECT * FROM ${notesSource(env)} WHERE id = ?`).bind(sourceNoteId).first(),
+			db.prepare(`SELECT * FROM ${notesSource(env)} WHERE id = ?`).bind(targetNoteId).first(),
 		]);
 
 		if (!sourceNote || !targetNote) {
@@ -2160,7 +2172,7 @@ async function handleMergeNotes(request, env) {
 		await processNoteTags(db, targetNote.id, mergedContent);
 
 		// 删除源笔记
-		await db.prepare("DELETE FROM notes WHERE id = ?").bind(sourceNote.id).run();
+		await db.prepare(`DELETE FROM notes WHERE id = ?`).bind(sourceNote.id).run();
 
 		// 将源笔记的文件移动到目标笔记的 R2 目录下
 		if (sourceFiles.length > 0) {
@@ -2177,7 +2189,7 @@ async function handleMergeNotes(request, env) {
 		}
 
 		// 返回更新后的目标笔记
-		const updatedMergedNote = await db.prepare("SELECT * FROM notes WHERE id = ?").bind(targetNote.id).first();
+		const updatedMergedNote = await db.prepare(`SELECT * FROM ${notesSource(env)} WHERE id = ?`).bind(targetNote.id).first();
 		if (typeof updatedMergedNote.files === 'string') {
 			updatedMergedNote.files = JSON.parse(updatedMergedNote.files);
 		}

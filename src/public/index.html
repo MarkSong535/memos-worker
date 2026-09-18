@@ -3057,7 +3057,9 @@
   .note.is-long .toggle-content-btn {
 	display: inline-block; /* 当笔记很长时显示按钮 */
   }
+[data-action='merge'] { display:none !important; }
 </style>
+<script src='/vendor/purify.min.js'></script>
 <body class='loading' data-theme='dark'>
 <div id='initial-loader'>
 	<div class='spinner'></div>
@@ -3067,16 +3069,16 @@
 	<form id='login-form' class='auth-form'>
 		<h3>MEMOS</h3>
 		<div id='login-error'></div>
-		<input type='text' id='username' placeholder='Username' required>
-		<input type='password' id='password' placeholder='Password' required>
-		<button type='submit' id='login-btn'>Login</button>
+		<input type='hidden' id='username'>
+		<input type='hidden' id='password'>
+		<a href='/api/auth/login' id='login-btn'>Sign in with Authentik</a>
 	</form>
 </div>
 <!-- 一个包裹三栏的容器 -->
 <div id='app-layout-container'>
 
 	<!-- 左侧栏 -->
-	<aside id='left-sidebar'>
+	<aside id='left-sidebar'><a id='permissions-link' href='/admin.html' hidden>Manage note access</a>
 		<!-- --- 全局搜索框 --- -->
 		<div class='sidebar-search-container'>
 			<svg class='search-icon' xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='currentColor'>
@@ -4052,12 +4054,13 @@
 		return result.url;
 	}
 
-	function postProcessMarkdownHtml(html) {
+	function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+    function postProcessMarkdownHtml(html) {
 		if (!html) {
 			return html;
 		}
 		const tempDiv = document.createElement('div');
-		tempDiv.innerHTML = html;
+		tempDiv.innerHTML = DOMPurify.sanitize(html);
 
 		if (typeof renderMathInElement === 'function') {
 			renderMathInElement(tempDiv, {
@@ -4478,7 +4481,7 @@
 		const archiveBtn = notePopoverMenu.querySelector('[data-action="archive"], [data-action="unarchive"]');
 		const shareBtn = notePopoverMenu.querySelector('[data-action="share"]');
 
-		shareBtn.style.display = settings.enableSharing ? '' : 'none';
+		shareBtn.style.display = noteData?.can_share && settings.enableSharing ? '' : 'none';
 		if (appState.baseMode === 'archive') {
 			// 在归档视图下，只可能显示 "Unarchive"
 			archiveBtn.style.display = settings.showArchive ? '' : 'none'; // 同样要尊重设置
@@ -4513,7 +4516,8 @@
 			}
 		}
 
-		const btnRect = targetButton.getBoundingClientRect();
+		if (!noteData?.can_edit) [favoriteBtn, pinBtn, archiveBtn].forEach(button => button.style.display = 'none');
+        const btnRect = targetButton.getBoundingClientRect();
 		notePopoverMenu.style.top = `${btnRect.bottom + 5}px`;
 		notePopoverMenu.style.left = `${btnRect.right - notePopoverMenu.offsetWidth}px`;
 		notePopoverMenu.classList.add('visible');
@@ -4660,11 +4664,12 @@
 			}
 			case 'delete': {
 				if (!noteElement) return;
-				const confirmed = await showCustomConfirm('Are you sure you want to delete this note?');
+				const confirmed = await showCustomConfirm(currentUser?.isAdmin ? 'Permanently delete this note? This cannot be undone.' : 'Hide this note from your account? Administrators will retain access.');
 				if (!confirmed) return;
 				waterfallObserver.unobserve(noteElement);
 				try {
-					await fetch(`/api/notes/${noteId}`, { method: 'DELETE' });
+					const deleted = await fetch(`/api/notes/${noteId}`, { method: 'DELETE' });
+                    if (!deleted.ok) throw new Error('Could not delete note. Please sign in again if your session expired.');
 					noteElement.remove();
 					loadAndRenderTags();
 					loadAndRenderTimeline();
@@ -4870,11 +4875,13 @@
                 </button>
                 `;
 			}
+			if (!item.can_share) shareButtonHTML = '';
+            if (!item.can_edit) deleteButtonHTML = '';
 			if (item.type === 'image') {
 				itemLink.href = item.url;
 				itemLink.className = 'attachment-item attachment-item-image';
 				itemLink.dataset.previewable = true;
-				itemLink.innerHTML = `<img src="${item.url}" loading="lazy" class="preview" alt="Image from note ${item.noteId}">`;
+				itemLink.innerHTML = `<img src="${escapeHtml(item.url)}" loading="lazy" class="preview" alt="Image from note ${item.noteId}">`;
 				gridEl.appendChild(itemLink);
 			} else if (item.type === 'video') {
 				const itemContainer = document.createElement('div');
@@ -4884,7 +4891,7 @@
 				itemContainer.dataset.url = item.url;
 				itemContainer.style.cursor = 'pointer';
 				itemContainer.innerHTML = `
-        <video src="${item.url}" class="preview" preload="metadata" muted style="object-fit: contain; background: #000; pointer-events: none;"></video>
+        <video src="${escapeHtml(item.url)}" class="preview" preload="metadata" muted style="object-fit: contain; background: #000; pointer-events: none;"></video>
         <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 3rem; color: rgba(255,255,255,0.7); pointer-events: none;">▶</div>
     `;
 				gridEl.appendChild(itemContainer);
@@ -4895,7 +4902,7 @@
 				itemLink.innerHTML = `
                     <div class="file-icon">📄</div>
                     <div class="file-info">
-                        <div class="name">${item.name}</div>
+                        <div class="name">${escapeHtml(item.name)}</div>
                         <div class="size">${formatBytes(item.size)}</div>
                     </div>
                 ${shareButtonHTML}
@@ -5178,6 +5185,7 @@
 	 * 应用启动器
 	 * 检查用户登录状态，并根据结果显示合适的界面
 	 */
+	let currentUser = null;
 	async function initializeApp() {
 		// 隐藏初始加载动画
 		const initialLoader = document.getElementById('initial-loader');
@@ -5187,7 +5195,10 @@
 		}, 200);
 
 		try {
-			const response = await fetch('/api/notes?page=1');
+			const me = await fetch('/api/me');
+            currentUser = me.ok ? await me.json() : null;
+            document.getElementById('permissions-link').hidden = !currentUser?.isAdmin;
+            const response = await fetch('/api/notes?page=1');
 			if (response.ok) {
 				const data = await response.json();
 				// 显示应用主界面
@@ -5823,13 +5834,14 @@
 
 			case 'delete': {
 				if (!noteElement) return;
-				const confirmed = await showCustomConfirm('Are you sure you want to delete this note?');
+				const confirmed = await showCustomConfirm(currentUser?.isAdmin ? 'Permanently delete this note? This cannot be undone.' : 'Hide this note from your account? Administrators will retain access.');
 				if (!confirmed) return;
 
 				// 复用现有的删除逻辑
 				waterfallObserver.unobserve(noteElement);
 				try {
-					await fetch(`/api/notes/${noteId}`, { method: 'DELETE' });
+					const deleted = await fetch(`/api/notes/${noteId}`, { method: 'DELETE' });
+                    if (!deleted.ok) throw new Error('Could not delete note. Please sign in again if your session expired.');
 					noteElement.remove();
 				} catch (error) {
 					waterfallObserver.observe(noteElement);
@@ -7181,7 +7193,7 @@
 
 		filteredTags.forEach(tag => {
 			const li = document.createElement('li');
-			li.textContent = `#${tag.name}`;
+			li.textContent = `#${escapeHtml(tag.name)}`;
 			li.dataset.tagName = tag.name;
 			tagDropdownList.appendChild(li);
 		});
@@ -7242,32 +7254,11 @@
 	});
 
 
-	loginForm.addEventListener('submit', async e => {
-		e.preventDefault();
-		const btn = document.getElementById('login-btn');
-		const err = document.getElementById('login-error');
-		btn.disabled = true;
-		btn.textContent = 'Logging in...';
-		err.textContent = '';
-		try {
-			const res = await fetch('/api/login', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ username: username.value, password: password.value })
-			});
-			if (!res.ok) throw new Error('Invalid username or password.');
-			initializeApp();
-		} catch (error) {
-			err.textContent = error.message;
-		} finally {
-			btn.disabled = false;
-			btn.textContent = 'Login';
-		}
-	});
+	loginForm.addEventListener('submit', e => { e.preventDefault(); location.href = '/api/auth/login'; });
 
 	logoutBtn.addEventListener('click', async () => {
 		try {
-			await fetch('/api/logout', { method: 'POST' });
+			await fetch('/api/auth/logout', { method: 'POST' });
 		} finally {
 			window.location.reload();
 		}
@@ -7408,14 +7399,14 @@
 				if (file.type?.startsWith('image/')) {
 					// 对于图片，将按钮放在一个容器里
 					attachmentsHTML += `<div class='attachment-img'>
-							<img class='note-image-attachment' loading='lazy' src='${fileUrl}' alt='${file.name}' style='cursor: zoom-in;'>
+							<img class='note-image-attachment' loading='lazy' src='${fileUrl}' alt='${escapeHtml(file.name)}' style='cursor: zoom-in;'>
 							${shareButtonHTML}
 							${deleteButtonHTML}
 						</div>`;
 				} else {
 					// 对于普通文件，直接在链接内部添加按钮
-					attachmentsHTML += `<a href='${fileUrl}' class='attachment-link' download='${file.name}'>
-							<span class='file-name'>${file.name}</span>
+					attachmentsHTML += `<a href='${fileUrl}' class='attachment-link' download='${escapeHtml(file.name)}'>
+							<span class='file-name'>${escapeHtml(file.name)}</span>
 							<span class='file-size'>${formatBytes(file.size)}</span>
 							${shareButtonHTML}
 							${deleteButtonHTML}
@@ -7429,7 +7420,7 @@
 		// if (appState.isWaterfall) {
 		// 	index = `#${noteCounter++} ・`
 		// }
-		noteElement.innerHTML = `
+		noteElement.innerHTML = DOMPurify.sanitize(`
 									<div class='note-header'>
 									<div class='note-meta'> ${index}
 										<span title='${time.absolute}'>${time.relative}</span>
@@ -7482,7 +7473,7 @@
 									</div>
 
 									<div class='edit-files-container'></div>
-							`;
+							`);
 		noteElement.querySelector('.note-content').innerHTML = postProcessMarkdownHtml(marked.parse(note.content));
 
 		if (isLongContent) {
@@ -7490,7 +7481,15 @@
 		}
 		noteElement.querySelector('.edit-textarea').value = note.content;
 
-		return noteElement;
+        if (!note.can_share) noteElement.querySelectorAll('.share-file-btn').forEach(button => button.remove());
+        if (!note.can_edit) noteElement.querySelectorAll('.edit, .unpin-btn, .delete-file-btn').forEach(button => button.remove());
+        if (note.is_admin) {
+            const link = document.createElement('a');
+            link.href = `/admin.html?note=${note.id}`;
+            link.textContent = 'Access';
+            noteElement.querySelector('.note-actions').append(link);
+        }
+        return noteElement;
 	}
 
 	function renderNotes(notes) {
@@ -7930,7 +7929,7 @@
 		if (modalImage.src !== src) {
 			modalImage.src = src;
 		}
-		imageCaption.innerHTML = alt;
+		imageCaption.textContent = alt;
 	}
 
 	function closePreview() {
@@ -7941,7 +7940,7 @@
 		if (modalVideo.src !== src) {
 			modalVideo.src = src;
 		}
-		videoCaption.innerHTML = alt;
+		videoCaption.textContent = alt;
 		modalVideo.play();
 	}
 	function closeVideoPreview() {
@@ -8396,7 +8395,8 @@
 		const timelineContainer = document.getElementById('timeline-container');
 		try {
 			const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-			const apiUrl = `/api/notes/timeline?timezone=${encodeURIComponent(userTimezone)}`;
+			// Keep IANA timezone slashes literal: Cloudflare blocks encoded slashes.
+			const apiUrl = `/api/notes/timeline?timezone=${encodeURIComponent(userTimezone).replace(/%2F/gi, '/')}`;
 			const response = await fetch(apiUrl);
 			if (!response.ok) throw new Error('Failed to fetch timeline');
 			const timelineData = await response.json();
@@ -8574,10 +8574,10 @@
 			tags.forEach(tag => {
 				const tagLi = document.createElement('li');
 				tagLi.innerHTML = `
-                    <div class='tag-item' data-tag-name='${tag.name}' title='Filter by tag: #${tag.name}'>
+                    <div class='tag-item' data-tag-name='${escapeHtml(tag.name)}' title='Filter by tag: #${escapeHtml(tag.name)}'>
                         <span class='tag-label'>
                             <span class='tag-hash'>#</span>
-                            <span class='tag-name'>${tag.name}</span>
+                            <span class='tag-name'>${escapeHtml(tag.name)}</span>
                         </span>
                         <span class='tag-count'>${tag.count}</span>
                     </div>

@@ -21,3 +21,8 @@ preview_id = ""
 binding = "NOTES_R2_BUCKET"
 bucket_name = "memos"
 preview_bucket_name = "notes-files-preview"
+
+[vars]
+OIDC_CLIENT_ID = "oucLomeuniIPugbjZP8RG84ECk2atMHDOLVazPGf"
+OIDC_DISCOVERY_URL = "https://anonymunication.ch/application/o/notes/.well-known/openid-configuration"
+APP_ORIGIN = "https://n.markso.ng"

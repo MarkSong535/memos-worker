@@ -1,0 +1,89 @@
+const $ = id => document.getElementById(id);
+let users = [], active, page = 1, archived = false;
+async function api(path, options = {}) {
+  const res = await fetch(path, options);
+  if (!res.ok) throw new Error(res.status === 401 ? 'Session expired. Return to Notes and sign in again.' : (await res.text()));
+  return res.status === 204 ? null : res.json();
+}
+function report(error) { $('status').textContent = error.message; }
+function option(value, label) { const el = document.createElement('option'); el.value = value; el.textContent = label; return el; }
+function renderUserSharing() {
+  $('user-sharing').replaceChildren();
+  for (const user of users) {
+    const label = document.createElement('label'), toggle = document.createElement('input');
+    toggle.type = 'checkbox'; toggle.checked = !!user.can_share;
+    label.append(toggle, `Allow sharing: ${user.name}${user.email ? ` (${user.email})` : ''}`);
+    toggle.onchange = async () => {
+      const requested = toggle.checked;
+      toggle.disabled = true;
+      try {
+        await api(`/api/admin/users/${encodeURIComponent(user.id)}/sharing`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ can_share: requested }) });
+        user.can_share = Number(requested);
+        $('status').textContent = requested ? `Sharing enabled for ${user.name}.` : `Sharing disabled for ${user.name}; their existing links were revoked.`;
+      } catch (error) { toggle.checked = !!user.can_share; report(error); }
+      finally { toggle.disabled = false; }
+    };
+    $('user-sharing').append(label);
+  }
+}
+async function openNote(id) {
+  const note = await api(`/api/admin/notes/${id}/permissions`);
+  active = id; $('note-id').value = id; $('title').textContent = `Note #${id}`;
+  $('owner').replaceChildren(option('', 'Unassigned — administrators only unless granted below'));
+  users.forEach(u => $('owner').append(option(u.id, u.name + (u.email ? ` (${u.email})` : ''))));
+  $('owner').value = note.owner_id || '';
+  $('grants').replaceChildren();
+  for (const user of users) {
+    const row = document.createElement('tr'); row.dataset.user = user.id;
+    const name = document.createElement('td'); name.textContent = user.name;
+    const access = document.createElement('td'), select = document.createElement('select');
+    select.append(option('none', 'No additional access'), option('view', 'View'), option('edit', 'View and edit'));
+    const grant = note.grants.find(g => g.user_id === user.id);
+    select.value = grant ? (grant.can_edit ? 'edit' : 'view') : 'none'; access.append(select);
+    const hiddenCell = document.createElement('td');
+    const hidden = note.hidden.find(h => h.user_id === user.id);
+    if (hidden) {
+      const label = document.createElement('label'), restore = document.createElement('input'); restore.type = 'checkbox'; restore.className = 'restore';
+      label.append(restore, `Restore (hidden ${new Date(hidden.deleted_at).toLocaleString()})`); hiddenCell.append(label);
+    } else hiddenCell.textContent = 'No';
+    row.append(name, access, hiddenCell); $('grants').append(row);
+  }
+  $('editor').hidden = false; $('status').textContent = '';
+}
+async function listNotes() {
+  const data = await api(`/api/notes?page=${page}&archived=${archived}`);
+  for (const note of data.notes) {
+    const article = document.createElement('article'), button = document.createElement('button'), text = document.createElement('p');
+    button.textContent = `#${note.id}${archived ? ' (archived)' : ''} — Manage access`;
+    button.onclick = () => openNote(note.id).catch(report);
+    text.textContent = note.content.slice(0, 240); article.append(button, text); $('notes').append(article);
+  }
+  if (data.hasMore) page++;
+  else if (!archived) { archived = true; page = 1; await listNotes(); }
+  else $('more').hidden = true;
+}
+$('choose').onsubmit = e => { e.preventDefault(); openNote(Number($('note-id').value)).catch(report); };
+$('more').onclick = () => listNotes().catch(report);
+$('save').onclick = async () => {
+  const grants = [], restore = [];
+  for (const row of $('grants').children) {
+    const value = row.querySelector('select').value;
+    if (value !== 'none') grants.push({ user_id: row.dataset.user, can_edit: value === 'edit' });
+    if (row.querySelector('.restore')?.checked) restore.push(row.dataset.user);
+  }
+  try {
+    await api(`/api/admin/notes/${active}/permissions`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner_id: $('owner').value || null, grants, restore }) });
+    await openNote(active); $('status').textContent = 'Permissions saved.';
+  } catch (error) { report(error); }
+};
+$('purge').onclick = async () => {
+  if (!confirm(`Permanently delete note #${active}? This cannot be undone.`)) return;
+  try { await api(`/api/notes/${active}`, { method: 'DELETE' }); location.href = '/admin.html'; } catch (error) { report(error); }
+};
+try {
+  const me = await api('/api/me');
+  if (!me.isAdmin) throw new Error('Administrator access required.');
+  users = await api('/api/admin/users'); renderUserSharing(); await listNotes();
+  const id = new URLSearchParams(location.search).get('note');
+  if (id && /^\d+$/.test(id)) await openNote(Number(id));
+} catch (error) { report(error); }

@@ -177,3 +177,8 @@ dist
 
 # macOS system files
 .DS_Store
+
+# Version database migrations even when SQL is globally ignored.
+!migrations/*.sql
+
+wrangler.toml

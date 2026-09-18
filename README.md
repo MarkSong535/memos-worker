@@ -1,3 +1,5 @@
+> **Authentication has changed:** this version requires Authentik SSO and the database migration. See [SSO setup and deployment](docs/sso.md) before deploying. The old shared username/password login instructions below no longer apply; public sharing now follows ownership and deletion rules.
+
 [中文](./README_zh.md)
 
 # Memos Worker: A Cloudflare-Powered Notes and Knowledge Base

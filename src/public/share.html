@@ -3,6 +3,7 @@
 <head>
 	<meta charset='UTF-8'>
 	<meta name='viewport' content='width=device-width, initial-scale=1.0'>
+	<script src='/vendor/purify.min.js'></script>
 	<script src='https://cdnjs.cloudflare.com/ajax/libs/marked/15.0.12/marked.min.js'></script>
 	<link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css'>
 	<script src='https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js'></script>
@@ -148,7 +149,7 @@
 
 	function renderMarkdownContent(markdown) {
 		const tempDiv = document.createElement('div');
-		tempDiv.innerHTML = marked.parse(markdown || '');
+		tempDiv.innerHTML = DOMPurify.sanitize(marked.parse(markdown || ''));
 		if (typeof renderMathInElement === 'function') {
 			renderMathInElement(tempDiv, {
 				delimiters: [
@@ -190,13 +191,13 @@
 			attachmentsHTML += '</div>';
 		}
 
-		noteElement.innerHTML = `
+		noteElement.innerHTML = DOMPurify.sanitize(`
 			<div class='note-header'>
 				<div class='note-meta'><span title='${new Date(note.updated_at).toISOString()}'>${time}</span></div>
 			</div>
 			<div class='note-content'>${renderMarkdownContent(note.content)}</div>
             ${attachmentsHTML}
-		`;
+		`);
 		return noteElement;
 	}
 
